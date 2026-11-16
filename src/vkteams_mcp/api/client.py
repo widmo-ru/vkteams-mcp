@@ -22,6 +22,8 @@ log = logging.getLogger("vkteams_mcp.api")
 # httpx logs every URL at INFO, and wim URLs carry the aimsid: the client's own logger stays above INFO.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+SNAPSHOT_FOLLOW = 20  # stream batches read after the first when building the chat list
+
 START_EVENTS = (
     "myInfo,presence,buddylist,typing,dataIM,userAddedToBuddyList,mchat,hist,hiddenChat,diff,"
     "permitDeny,imState,notification,apps"
@@ -60,6 +62,8 @@ class VK:
         self.s = session
         self.http = http
         self._on_renew = on_renew  # persists the renewed session
+        self._next_url: str | None = None  # where the last stream batch said the next one starts
+        self.snapshot_partial = False  # the last snapshot stopped on an error before the stream's end
 
     # ---------------------------------------------------------------- rapi
     async def rapi(self, method: str, params: dict | None = None, *, write: bool = False) -> dict:
@@ -189,6 +193,7 @@ class VK:
         if resp.get("statusCode") != 200:
             raise VKError("failed_read")
         data = resp.get("data") or {}
+        self._next_url = data.get("fetchBaseURL")
         if move and data.get("fetchBaseURL"):
             self.s.fetch_base_url = data["fetchBaseURL"]
         return data.get("events") or []
@@ -199,8 +204,35 @@ class VK:
 
     async def snapshot(self) -> list[dict]:
         """Events from the session's stream position without moving it: the chat list and recent
-        dialogs replay from there (live 2026-11-15)."""
-        return await self._stream(1, move=False)
+        dialogs replay from there (live 2026-11-15). The first batch is the state when the session began;
+        the batches after it carry what happened since (live: last_at stuck at the session's start), so
+        the stream is followed a few batches on, without saving where it got to."""
+        events = await self._stream(1, move=False)
+        self.snapshot_partial = False
+        url = self._next_url
+        for _ in range(SNAPSHOT_FOLLOW):
+            if not url:
+                break
+            try:
+                resp = await self._poll(url, 1)
+            except VKError as e:
+                if e.key != "failed_read":  # throttling and the like go to the caller as they are
+                    raise
+                resp = {}
+            if resp.get("statusCode") != 200:
+                # the first batch stands on its own, as it did before; the caller does not keep a partial list
+                self.snapshot_partial = True
+                break
+            data = resp.get("data") or {}
+            more = data.get("events") or []
+            if not more:
+                break
+            events += more
+            nxt = data.get("fetchBaseURL")
+            url = nxt if nxt and nxt != url else None
+        else:
+            self.snapshot_partial = bool(url)  # stopped at the limit with more of the stream left
+        return events
 
     # ---------------------------------------------------------------- files
     async def files_get(self, path: str, params: dict, *, binary: bool = False) -> dict:

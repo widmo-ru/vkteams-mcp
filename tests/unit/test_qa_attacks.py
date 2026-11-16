@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-from conftest import GROUP, call_tool, history_like_vk, ok
+from conftest import BASE, EVENTS_PATH, GROUP, GROUP2, HOST, call_tool, dialogs, history_like_vk, ok, saved
 
 from vkteams_mcp.tools._common import button_token
 
@@ -474,3 +474,296 @@ async def test_a_reaction_that_is_not_one_emoji_is_named_as_such(server, chats):
     )
     text = r.content[0].text
     assert r.is_error and "needs reaction" not in text and "one emoji" in text, text
+
+
+# ---------------------------------------------------------------- open remarks R2-R15, closed in 0.2.5
+
+
+async def test_a_garbled_cursor_is_called_damaged_not_foreign(server, chats):
+    """R2"""
+    r = await call_tool(server, "list_chats", {"cursor": "not a cursor at all"})
+    assert r.is_error and "damaged" in r.content[0].text, r.content[0].text
+
+
+async def test_a_blank_people_query_is_refused(server, chats):
+    """R11"""
+    r = await call_tool(server, "find_people", {"query": "   "})
+    assert r.is_error and chats.calls("search") == []
+
+
+async def test_find_people_says_when_there_are_more(server, chats):
+    """R10: has_more was always false; a bot was shown as a person."""
+    data = [{"sn": f"p{i}@example.com", "anketa": {"friendly": f"Ann {i}"}} for i in range(3)]
+    data.append({"sn": "70001", "anketa": {"friendly": "Ann Bot"}})
+    chats.rapi("search", ok({"data": data}))
+    r = (await call_tool(server, "find_people", {"query": "Ann", "limit": 2})).structured_content
+    assert r["count"] == 2 and r["has_more"] is True
+    everyone = (await call_tool(server, "find_people", {"query": "Ann", "limit": 10})).structured_content
+    assert everyone["has_more"] is False
+    bot = [x for x in everyone["items"] if x["person"] == "70001"]
+    assert bot and bot[0].get("kind") == "bot"
+
+
+async def test_a_profile_says_when_its_common_chats_were_cut(server, chats):
+    """R10: ten chat ids in string order, with nothing saying more were left out."""
+    chats.rapi("getUserInfo", ok({"friendly": "Ann"}))
+    chats.rapi("getCommonChats", ok({"chats": [{"sn": f"{1000 + i}@chat.agent"} for i in range(12)]}))
+    item = (await call_tool(server, "find_people", {"query": "ann@example.com"})).structured_content["items"][0]
+    assert len(item["common_chats"]) == 10 and item.get("common_chats_total") == 12
+
+
+async def test_a_call_needs_a_title(server, chats):
+    """R13: an empty title created a nameless call."""
+    for title in ("", "   ", "​"):
+        r = await call_tool(server, "save_call_link", {"title": title})
+        assert r.is_error, repr(title)
+    assert chats.writes() == []
+
+
+_POLL_MSG = {"msgId": 6, "time": 1, "outgoing": False, "text": "lunch?", "parts": [{"poll": {"id": "pl1"}}]}
+
+
+def _poll(closed=False):
+    return ok({"closed": closed, "answers": [{"answerId": "1", "text": "yes"}, {"answerId": "2", "text": "no"}]})
+
+
+async def test_a_vote_for_an_option_the_poll_lacks_is_refused_before_vk(server, chats):
+    """R9: VK answered "refused (no reason given)" for option 9."""
+    chats.rapi("getHistory", history_like_vk([_POLL_MSG]))
+    chats.rapi("poll/get", _poll())
+    r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "6", "action": "vote", "option": 9, "user_confirmed": True},
+    )
+    assert r.is_error and "1, 2" in r.content[0].text and chats.writes() == [], r.content[0].text
+
+
+async def test_a_closed_poll_is_named_as_closed(server, chats):
+    """R9: VK answered "refused (no reason given)" for a vote in a closed poll."""
+    chats.rapi("getHistory", history_like_vk([_POLL_MSG]))
+    chats.rapi("poll/get", _poll(closed=True))
+    for action, extra in (("vote", {"option": 1}), ("close_poll", {})):
+        r = await call_tool(
+            server,
+            "update_message",
+            {"chat": GROUP, "message": "6", "action": action, "user_confirmed": True, **extra},
+        )
+        assert r.is_error and "closed" in r.content[0].text, r.content[0].text
+    assert chats.writes() == []
+
+
+async def test_a_refusal_before_vk_spends_no_allowance(server, chats):
+    """R9: "not a poll" took a token from the bucket."""
+    chats.rapi("getHistory", history_like_vk([{"msgId": 5, "time": 1, "outgoing": True, "text": "mine"}]))
+    chats.rapi("reaction/add", ok())
+    for _ in range(30):
+        r = await call_tool(
+            server,
+            "update_message",
+            {"chat": GROUP, "message": "5", "action": "vote", "option": 1, "user_confirmed": True},
+        )
+        assert r.is_error and "not a poll" in r.content[0].text
+    ok_r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "5", "action": "react", "reaction": "👍", "user_confirmed": True},
+    )
+    assert not ok_r.is_error, ok_r.content[0].text
+
+
+async def test_members_of_a_one_to_one_chat_are_named_not_ignored(server, chats):
+    """R15: include_members on a person or a bot was silently dropped."""
+    chats.rapi("getUserInfo", ok({"friendly": "Ann Smith"}))
+    r = await call_tool(server, "get_chat", {"chat": "ann@example.com", "include_members": True})
+    assert not r.is_error and r.structured_content.get("members_note"), r.content
+
+
+async def test_search_in_all_chats_counts_chats_and_stops_when_they_are_seen(server, chats):
+    """R5: VK counts matching chats, not messages (live: total 1 for two messages in one chat), and the
+    cursor of the last page led to an empty one."""
+    chats.rapi(
+        "searchAllDialogs",
+        ok(
+            {
+                "dialogs": [
+                    {
+                        "sn": GROUP,
+                        "entries": [
+                            {"message": {"msgId": 5, "time": 1, "text": "budget"}},
+                            {"message": {"msgId": 6, "time": 2, "text": "budget again"}},
+                        ],
+                    }
+                ],
+                "totalEntryCount": 1,
+                "cursorAll": "next",
+                "persons": [],
+            }
+        ),
+    )
+    r = (await call_tool(server, "list_messages", {"query": "budget", "limit": 2})).structured_content
+    assert r["count"] == 2 and r["has_more"] is False and "total" not in r and r.get("chats_matched") == 1
+
+
+async def test_a_draft_sent_before_says_so(server, chats):
+    """R19: VK Teams answers a resend of the same draft with the first message's id and time (live), even when
+    that message was deleted since, and nothing new appears. The answer says the draft went out before."""
+    import time
+
+    chats.rapi("message/send", ok({"msgId": 99, "time": int(time.time()) - 600}))
+    d = await saved(server, chat=GROUP, text="once")
+    r = (await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})).structured_content
+    assert r["already_sent"] is True and "save_draft" in r["note"], r
+
+
+async def test_a_fresh_send_is_not_called_a_resend(server, chats):
+    import time
+
+    chats.rapi("message/send", ok({"msgId": 99, "time": int(time.time())}))
+    d = await saved(server, chat=GROUP2, text="new")
+    r = (await call_tool(server, "send_draft", {"chat": GROUP2, "draft": d, "user_confirmed": True})).structured_content
+    assert "already_sent" not in r and "note" not in r, r
+
+
+async def test_the_chat_list_reads_the_stream_past_the_sessions_start(server, chats):
+    """R3: list_chats read only the first batch of the event stream, the state when the session began, so
+    last_at stayed at 17:58 after messages at 18:22 and 21:47 (live). Later batches carry the news."""
+    first = dialogs((GROUP, "Project Alpha", 0, 1_800_000_100, "old"))
+    first["response"]["data"]["fetchBaseURL"] = f"https://{HOST}{BASE}/bos/node-1/aim/fetchEventsNext"
+    later = dialogs((GROUP, "Project Alpha", 2, 1_800_000_900, "news"))
+    chats.routes[("GET", EVENTS_PATH)] = [first]
+    chats.on("GET", f"{BASE}/bos/node-1/aim/fetchEventsNext", later)
+    r = (await call_tool(server, "list_chats", {})).structured_content
+    row = next(x for x in r["items"] if x["chat"] == GROUP)
+    assert row["unread"] == 2 and "news" in row["last_message"], row
+
+
+async def test_an_older_batch_never_moves_a_chat_back(server, chats):
+    first = dialogs((GROUP, "Project Alpha", 1, 1_800_000_900, "new"))
+    first["response"]["data"]["fetchBaseURL"] = f"https://{HOST}{BASE}/bos/node-1/aim/fetchEventsNext"
+    stale = dialogs((GROUP, "Project Alpha", 1, 1_800_000_100, "old"))
+    chats.routes[("GET", EVENTS_PATH)] = [first]
+    chats.on("GET", f"{BASE}/bos/node-1/aim/fetchEventsNext", stale)
+    r = (await call_tool(server, "list_chats", {})).structured_content
+    row = next(x for x in r["items"] if x["chat"] == GROUP)
+    assert "new" in row["last_message"], row
+
+
+async def test_a_cursor_with_an_altered_signature_is_damaged_and_one_from_another_list_is_foreign(server, chats):
+    """R2, from review: a changed signature is damage; a sound cursor of another list is foreign."""
+    first = (await call_tool(server, "list_chats", {"limit": 1})).structured_content
+    good = first["cursor"]
+    p64, sig = good.split(".", 1)
+    altered = f"{p64}.{('A' if sig[0] != 'A' else 'B')}{sig[1:]}"
+    r = await call_tool(server, "list_chats", {"limit": 1, "cursor": altered})
+    assert r.is_error and "damaged" in r.content[0].text, r.content[0].text
+    other = await call_tool(server, "list_chats", {"limit": 1, "filter": "unread", "cursor": good})
+    assert other.is_error and "does not belong" in other.content[0].text, other.content[0].text
+
+
+async def test_an_unread_only_update_is_not_dropped(server, chats):
+    """From review: a later batch with unreadCnt and no messages must still clear the unread count."""
+    first = dialogs((GROUP, "Project Alpha", 3, 1_800_000_900, "new"))
+    first["response"]["data"]["fetchBaseURL"] = f"https://{HOST}{BASE}/bos/node-1/aim/fetchEventsNext"
+    read = {
+        "response": {
+            "statusCode": 200,
+            "data": {"events": [{"type": "histDlgState", "eventData": {"sn": GROUP, "unreadCnt": 0, "messages": []}}]},
+        }
+    }
+    chats.routes[("GET", EVENTS_PATH)] = [first]
+    chats.on("GET", f"{BASE}/bos/node-1/aim/fetchEventsNext", read)
+    r = (await call_tool(server, "list_chats", {})).structured_content
+    row = next(x for x in r["items"] if x["chat"] == GROUP)
+    assert not row.get("unread") and "new" in row["last_message"], row
+
+
+async def test_a_failed_follow_up_batch_is_not_cached_as_the_whole_list(server, chats):
+    """From review: an error while following the stream gave a partial list that was cached for a minute."""
+    first = dialogs((GROUP, "Project Alpha", 0, 1_800_000_100, "old"))
+    first["response"]["data"]["fetchBaseURL"] = f"https://{HOST}{BASE}/bos/node-1/aim/fetchEventsNext"
+    later = dialogs((GROUP, "Project Alpha", 2, 1_800_000_900, "news"))
+    chats.routes[("GET", EVENTS_PATH)] = [first]
+    chats.on("GET", f"{BASE}/bos/node-1/aim/fetchEventsNext", {"response": {"statusCode": 500}}, later)
+    await call_tool(server, "list_chats", {})
+    r = (await call_tool(server, "list_chats", {})).structured_content
+    row = next(x for x in r["items"] if x["chat"] == GROUP)
+    assert "news" in row["last_message"], row
+
+
+async def test_within_one_second_the_later_message_is_the_last(server, chats):
+    """From review: max() by time alone kept the first of messages sent in the same second."""
+    snap = dialogs((GROUP, "Project Alpha", 0, 1_800_000_900, "x"))
+    for e in snap["response"]["data"]["events"]:
+        if e["type"] == "histDlgState" and e["eventData"]["sn"] == GROUP:
+            e["eventData"]["messages"] = [
+                {"msgId": 10, "time": 1_800_000_900, "outgoing": False, "text": "first"},
+                {"msgId": 11, "time": 1_800_000_900, "outgoing": False, "text": "second"},
+            ]
+    chats.routes[("GET", EVENTS_PATH)] = [snap]
+    r = (await call_tool(server, "list_chats", {})).structured_content
+    row = next(x for x in r["items"] if x["chat"] == GROUP)
+    assert "second" in row["last_message"], row
+
+
+async def test_a_network_failure_while_following_keeps_the_first_batch(server, chats):
+    """From review: a timeout on a follow-up batch failed the whole list instead of falling back."""
+    import httpx
+
+    first = dialogs((GROUP, "Project Alpha", 0, 1_800_000_100, "old"))
+    first["response"]["data"]["fetchBaseURL"] = f"https://{HOST}{BASE}/bos/node-1/aim/fetchEventsNext"
+
+    def boom(_seen):
+        raise httpx.ReadTimeout("slow")
+
+    chats.routes[("GET", EVENTS_PATH)] = [first]
+    chats.on("GET", f"{BASE}/bos/node-1/aim/fetchEventsNext", boom)
+    r = await call_tool(server, "list_chats", {})
+    assert not r.is_error and any(x["chat"] == GROUP for x in r.structured_content["items"]), r.content
+
+
+async def test_a_stale_batch_in_the_same_second_does_not_replace_the_later_message(server, chats):
+    first = dialogs((GROUP, "Project Alpha", 0, 1_800_000_900, "x"))
+    first["response"]["data"]["fetchBaseURL"] = f"https://{HOST}{BASE}/bos/node-1/aim/fetchEventsNext"
+    later = dialogs((GROUP, "Project Alpha", 0, 1_800_000_900, "x"))
+    for snap, mid, text in ((first, 11, "second"), (later, 10, "first")):
+        for e in snap["response"]["data"]["events"]:
+            if e["type"] == "histDlgState":
+                e["eventData"]["messages"] = [{"msgId": mid, "time": 1_800_000_900, "outgoing": False, "text": text}]
+    chats.routes[("GET", EVENTS_PATH)] = [first]
+    chats.on("GET", f"{BASE}/bos/node-1/aim/fetchEventsNext", later)
+    r = (await call_tool(server, "list_chats", {})).structured_content
+    row = next(x for x in r["items"] if x["chat"] == GROUP)
+    assert "second" in row["last_message"], row
+
+
+async def test_a_stream_longer_than_the_follow_limit_is_not_cached(server, chats):
+    """From review: stopping at the batch limit with more stream left is a partial list too."""
+    from vkteams_mcp.api import client
+
+    first = dialogs((GROUP, "Project Alpha", 0, 1_800_000_100, "old"))
+    first["response"]["data"]["fetchBaseURL"] = f"https://{HOST}{BASE}/bos/node-1/aim/n0"
+    chats.routes[("GET", EVENTS_PATH)] = [first]
+    for i in range(client.SNAPSHOT_FOLLOW):
+        b = dialogs((GROUP, "Project Alpha", 0, 1_800_000_200 + i, f"m{i}"))
+        b["response"]["data"]["fetchBaseURL"] = f"https://{HOST}{BASE}/bos/node-1/aim/n{i + 1}"
+        chats.on("GET", f"{BASE}/bos/node-1/aim/n{i}", b)
+    await call_tool(server, "list_chats", {})
+    before = len([s for s in chats.seen if s.path == EVENTS_PATH])
+    await call_tool(server, "list_chats", {})
+    assert len([s for s in chats.seen if s.path == EVENTS_PATH]) == before + 1  # read again, not cached
+
+
+async def test_a_fresh_send_is_not_a_resend_when_the_clocks_differ(server, chats):
+    """From review: with this server's clock five minutes ahead of VK Teams, every fresh send looked old."""
+    import dataclasses
+    import time
+
+    from vkteams_mcp.core import context
+
+    s = context.session_override.get()
+    context.session_override.set(dataclasses.replace(s, time_offset=-300))
+    chats.rapi("message/send", ok({"msgId": 99, "time": int(time.time()) - 300}))
+    d = await saved(server, chat=GROUP, text="now")
+    r = (await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})).structured_content
+    assert "already_sent" not in r, r

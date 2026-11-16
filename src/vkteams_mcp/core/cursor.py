@@ -33,12 +33,20 @@ class Cursors:
         return f"{_b64(payload)}.{self._mac(payload)}"
 
     def read(self, tool: str, person: str, cursor: str, scope: dict | None = None) -> dict:
+        damaged = invalid("This cursor is damaged: pass it exactly as it came, or start the list again.")
         try:
             p64, sig = cursor.split(".", 1)
             payload = _unb64(p64)
-            if not hmac.compare_digest(self._mac(payload), sig):
-                raise ValueError
+            signed = hmac.compare_digest(self._mac(payload), sig)
+        except (ValueError, TypeError):
+            raise damaged from None
+        if not signed:  # altered, or made by another server: either way not one this server can read
+            raise damaged
+        try:  # only a payload this server signed is parsed
             body = json.loads(payload)
+        except ValueError:
+            raise damaged from None
+        try:
             if body["t"] != tool or body["p"] != person or body["q"] != (scope or {}):
                 raise ValueError
             return body["s"]

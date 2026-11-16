@@ -49,6 +49,7 @@ MAX_POLL_OPTION = 300
 MAX_SCHEDULE_DAYS = 366
 # Live: VK Teams reads `@[ address ]` with spaces inside as a mention too, so every @[...] counts, trimmed.
 _NATIVE_MENTION = re.compile(r"@\[([^\[\]]+)\]")
+RESEND_AGE = 60  # seconds: an answer older than this is the first send of the same draft
 
 
 def _native_mentions(text: str) -> set[str]:
@@ -228,8 +229,13 @@ async def _search(c, sn: str | None, query: str, n: int, state: dict, extra: dic
     for d in r.get("dialogs") or []:
         for e in d.get("entries") or []:
             items.append(dict(project_message(e.get("message") or {}, d.get("sn", ""), names, c.tz), chat=d.get("sn")))
-    nxt = c.cursor_out({"all": r["cursorAll"]}, scope) if r.get("cursorAll") and len(items) >= n else None
-    return page_result(items[:n], nxt, total=r.get("totalEntryCount"), **extra)
+    # live: totalEntryCount counts matching chats, not messages; once every matching chat came, VK still
+    # hands a cursor, and it leads to an empty page
+    total = r.get("totalEntryCount")
+    seen = state.get("seen", 0) + len(r.get("dialogs") or [])
+    more = bool(r.get("cursorAll")) and len(items) >= n and not (isinstance(total, int) and seen >= total)
+    nxt = c.cursor_out({"all": r["cursorAll"], "seen": seen}, scope) if more else None
+    return page_result(items[:n], nxt, chats_matched=total, **extra)
 
 
 # ---------------------------------------------------------------- write: two steps
@@ -469,11 +475,22 @@ async def _send(c, sn: str, parts: dict, when: int | None, local_id: str | None 
         if queued is not None:
             return {"scheduled_id": queued, "scheduled_for": local(when, c.tz), "already_scheduled": True}
         p["schedule"] = {"scheduledTime": when}
+    asked_at = time.time() + c.vk.s.time_offset  # VK Teams' clock, as measured at sign-in
     r = await c.vk.rapi("message/send", p, write=True)
     sched = r.get("scheduled")
     if sched:
         return {"scheduled_id": id_text(sched.get("scheduledMsgId")), "scheduled_for": local(when, c.tz)}
-    return {"message": id_text(r.get("msgId")), "at": local(r.get("time"), c.tz)}
+    out = {"message": id_text(r.get("msgId")), "at": local(r.get("time"), c.tz)}
+    sent_at = r.get("time")
+    if isinstance(sent_at, (int, float)) and sent_at < asked_at - RESEND_AGE:
+        # live: a resend with the same localMsgId gets the first message's id and time back, even if that
+        # message was deleted since, and nothing new appears in the chat
+        out["already_sent"] = True
+        out["note"] = (
+            "This draft was sent before, at the time shown; nothing new was posted. "
+            "If that message was deleted, save_draft again to send it anew."
+        )
+    return out
 
 
 # ---------------------------------------------------------------- change
@@ -545,6 +562,17 @@ async def update_message(
             m, _ = await fetch_message(c, sn, message)
             if not m.get("outgoing"):
                 raise VKError("not_own_message")
+        poll = None
+        if action in ("vote", "unvote", "close_poll"):
+            # checked before the allowance is spent; VK Teams refuses these with no reason (live)
+            poll = await _poll_of(c, sn, message)
+            if action in ("vote", "close_poll"):
+                state = await c.vk.rapi("poll/get", {"id": poll})
+                if state.get("closed"):
+                    raise invalid("That poll is closed. Nothing was changed.")
+                ids = [str(a.get("answerId")) for a in state.get("answers") or [] if isinstance(a, dict)]
+                if action == "vote" and ids and str(option) not in ids:
+                    raise invalid(f"option is one of {', '.join(ids)}. Nothing was changed.")
         receipt = c.guard(kind="change", user_confirmed=user_confirmed, target=sn)
         if action == "edit":
             await c.vk.rapi(
@@ -573,7 +601,6 @@ async def update_message(
         elif action == "unreact":
             await c.vk.rapi("reaction/remove", {"msgId": message, "chatId": sn}, write=True)
         else:
-            poll = await _poll_of(c, sn, message)
             if action == "vote":
                 await c.vk.rapi("poll/vote", {"id": poll, "answerId": str(option)}, write=True)
             elif action == "unvote":

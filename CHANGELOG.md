@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.5 (2026-11-16)
+
+The open QA remarks.
+
+- Search across all chats reports `chats_matched` instead of a `total` that counted chats, not messages,
+  and stops offering a cursor once every matching chat has come.
+- Voting checks the poll first: a closed poll and an option the poll lacks are refused by name, before the
+  action allowance is spent.
+- `find_people` says when there are more people than shown, marks bots as `kind: bot`, refuses an empty
+  query and says how many chats a person shares when it lists only ten.
+- `list_chats` follows the event stream past the session's first batch, so `last_at`, unread counts and last
+  messages show what happened since the session began (live: `last_at` stayed hours behind).
+- Sending a draft that went out before says so: `already_sent` with a note. VK Teams answers such a resend with
+  the first message's id and time, even if that message was deleted, and posts nothing new.
+- A call needs a title. A damaged cursor, garbled or with an altered signature, is called damaged. `get_chat` with `include_members` on a
+  one-to-one chat says who its members are instead of ignoring the request.
+
 ## 0.2.4 (2026-11-16)
 
 From the sixth QA round, a full regression of 158 scenarios with no failures.

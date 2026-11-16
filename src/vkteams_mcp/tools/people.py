@@ -8,9 +8,10 @@ from pydantic import Field
 
 from vkteams_mcp.core.content import content_block, content_line
 from vkteams_mcp.core.context import call
+from vkteams_mcp.core.errors import invalid
 from vkteams_mcp.core.project import clamp_limit, compact, page_result
 from vkteams_mcp.registry import tool
-from vkteams_mcp.tools._common import is_address, is_chat_sn, local
+from vkteams_mcp.tools._common import is_address, is_bot_id, is_chat_sn, local
 
 
 @tool(area="people", title="Find people", read_only=True, idempotent=True, returns_list=True)
@@ -26,6 +27,8 @@ async def find_people(
     async with call("find_people") as c:
         n, extra = clamp_limit(limit)
         q = query.strip()
+        if not q:
+            raise invalid("query is empty: give part of a name or an e-mail address.")
         if is_address(q):
             u = await c.vk.rapi("getUserInfo", {"sn": q})
             common = await c.vk.rapi("getCommonChats", {"sn": q})
@@ -39,20 +42,29 @@ async def find_people(
                             "about": content_block(q, u["about"]) if u.get("about") else None,
                             "last_seen": local((u.get("userState") or {}).get("lastseen"), c.tz),
                             "common_chats": chats[:10] or None,
+                            "common_chats_total": len(chats) if len(chats) > 10 else None,
                         }
                     )
                 ],
                 None,
             )
         res = await c.vk.rapi("search", {"keyword": q})
-        items = [
+        found = [
             compact(
                 {
                     "person": d["sn"],
                     "name": content_line("VK Teams", (d.get("anketa") or {}).get("friendly") or d["sn"]),
+                    "kind": "bot" if is_bot_id(d["sn"]) else None,
                 }
             )
             for d in res.get("data") or []
-            if d.get("sn") and not is_chat_sn(d["sn"])
-        ][:n]
-        return page_result(items, None, **extra)
+            if isinstance(d, dict) and d.get("sn") and not is_chat_sn(d["sn"])
+        ]
+        more = len(found) > n  # the directory answers in one go: more found than shown means a narrower query
+        return page_result(
+            found[:n],
+            None,
+            **extra,
+            has_more=more or None,
+            more_note="Narrow the query to see the rest." if more else None,
+        )

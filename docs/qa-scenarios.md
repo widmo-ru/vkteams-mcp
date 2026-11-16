@@ -550,3 +550,21 @@ docstring инструментов. Живой прогон: 2026-11-16, сер�
 | R23 | не меняется: по контракту ответа «нет поля — значит нет» (`core/project.compact`), так экономятся токены | — |
 | R24 | отказ называет причину: «reaction must be one emoji» | `test_a_reaction_that_is_not_one_emoji_is_named_as_such` |
 | R7 | не меняется: VK добавляет в `mentions` автора ответа, то есть самого человека; другим людям это ничего не шлёт | — |
+
+## Открытые замечания R2–R19 (0.2.5)
+
+| № | Решение | Тест |
+|---|---|---|
+| R2 | испорченный курсор (мусор или изменённая подпись) называется испорченным; «не от этого списка» — только для целого курсора другого списка | `test_a_garbled_cursor_is_called_damaged_not_foreign`, `test_a_cursor_with_an_altered_signature_is_damaged_and_one_from_another_list_is_foreign` |
+| R5 | `total` был числом чатов, а не сообщений: теперь `chats_matched`; когда все чаты пришли, курсора нет | `test_search_in_all_chats_counts_chats_and_stops_when_they_are_seen` |
+| R9 | опрос проверяется чтением до изменяющего запроса к VK и до траты лимита: закрытый — «closed», чужой вариант — список вариантов | `test_a_vote_for_an_option_the_poll_lacks_is_refused_before_vk`, `test_a_closed_poll_is_named_as_closed`, `test_a_refusal_before_vk_spends_no_allowance` |
+| R10 | `has_more` и подсказка сузить запрос; бот — `kind: bot`; `common_chats_total`, когда показаны не все | `test_find_people_says_when_there_are_more`, `test_a_profile_says_when_its_common_chats_were_cut` |
+| R11 | пустой запрос — отказ | `test_a_blank_people_query_is_refused` |
+| R13 | пустое или невидимое название звонка — отказ | `test_a_call_needs_a_title` |
+| R15 | для чата один на один — `members_note` вместо молчания | `test_members_of_a_one_to_one_chat_are_named_not_ignored` |
+| R3 | раунд 6 замерил отставание (`last_at` 17:58 при сообщениях в 18:22 и 21:47). Причина: читалась только первая порция потока, состояние на начало сессии. Теперь поток дочитывается вперёд до 20 порций, более старая порция не двигает последнее сообщение назад, счётчик непрочитанных берётся из последней порции; при ошибке на дочитывании список не кэшируется. Живьём перепроверить | `test_the_chat_list_reads_the_stream_past_the_sessions_start`, `test_an_older_batch_never_moves_a_chat_back` |
+| R4 | нужен живой замер: в каком событии VK отдаёт признак архива (дамп `buddylist` для архивного чата) | — |
+| R14 | не чинится: VK не показывает параметр `/start` в истории, доставку не проверить | — |
+| R17 | не меняется: из ссылки берётся только id, скачивание всегда с хоста VK | — |
+| R18 | не меняется: «nothing was changed» на чтении говорит агенту, что побочных действий не было | — |
+| R19 | по замеру раунда 6 VK на повтор отвечает id и временем первой отправки. Ответ старше 60 с — признак повтора: `already_sent: true` и подсказка сохранить черновик заново, если то сообщение удалили | `test_a_draft_sent_before_says_so`, `test_a_fresh_send_is_not_called_a_resend` |

@@ -93,6 +93,7 @@ async def get_chat(
                     "title": content_line("VK Teams", u.get("friendly") or sn),
                     "about": content_block(sn, u["about"]) if u.get("about") else None,
                     "last_seen": local((u.get("userState") or {}).get("lastseen"), c.tz),
+                    "members_note": "A one-to-one chat: its members are you and them." if include_members else None,
                 }
             )
         info = await c.vk.rapi("getChatInfo", {"sn": sn, "memberLimit": 1})

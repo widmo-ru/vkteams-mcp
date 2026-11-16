@@ -97,20 +97,26 @@ async def chat_index(c: Call) -> dict[str, dict[str, Any]]:
             for p in d.get("persons") or []:
                 if p.get("sn") and p.get("friendly"):
                     names[p["sn"]] = p["friendly"]
-            msgs = d.get("messages") or []
-            last = msgs[-1] if msgs else {}
+            msgs = [x for x in d.get("messages") or [] if isinstance(x, dict)]
+            # times are whole seconds: within one second the larger id is the later message
+            last = max(msgs, key=lambda x: (x.get("time") or 0, x.get("msgId") or 0)) if msgs else {}
             entry = index.setdefault(sn, {"kind": kind_of(sn)})
-            entry.update(
-                unread=d.get("unreadCnt") or 0,
-                last_id=d.get("lastMsgId"),
-                last_at=last.get("time"),
-                last_text=message_text(last),
-                last_from=None if last.get("outgoing") else (last.get("chat") or {}).get("sender", sn),
-            )
+            if "unreadCnt" in d or "unread" not in entry:  # batches come in order: the latest count stands
+                entry["unread"] = d.get("unreadCnt") or 0
+            newest = (last.get("time") or 0, last.get("msgId") or 0)
+            if last and newest >= (entry.get("last_at") or 0, entry.get("_last_msg") or 0):  # the newest wins
+                entry["_last_msg"] = last.get("msgId") or 0
+                entry.update(
+                    last_id=d.get("lastMsgId", entry.get("last_id")),
+                    last_at=last.get("time"),
+                    last_text=message_text(last),
+                    last_from=None if last.get("outgoing") else (last.get("chat") or {}).get("sender", sn),
+                )
     for sn, entry in index.items():
         entry.setdefault("title", names.get(sn, sn))
         entry["names"] = names
-    cache[c.person] = (time.time() + INDEX_TTL, index)
+    if not c.vk.snapshot_partial:  # a list missing what happened since the session began is not kept
+        cache[c.person] = (time.time() + INDEX_TTL, index)
     return index
 
 

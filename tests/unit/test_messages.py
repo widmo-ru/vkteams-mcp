@@ -59,7 +59,7 @@ async def test_search_in_all_chats_uses_a_keyword_filter(server, chats):
         ),
     )
     r = (await call_tool(server, "list_messages", {"query": "budget"})).structured_content
-    assert r["items"][0]["chat"] == GROUP and r["total"] == 1
+    assert r["items"][0]["chat"] == GROUP and r["chats_matched"] == 1
     assert chats.calls("searchAllDialogs")[0].params == {"pagesize": 10, "filter": {"keyword": "budget"}}
 
 

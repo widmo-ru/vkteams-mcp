@@ -7,8 +7,10 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from vkteams_mcp.core.context import call
+from vkteams_mcp.core.errors import invalid
 from vkteams_mcp.registry import tool
 from vkteams_mcp.tools._common import resolve_person
+from vkteams_mcp.tools.messages import _visible
 
 
 @tool(area="calls", title="Create a call link", notifies_others=True)
@@ -32,6 +34,9 @@ async def save_call_link(
     no confirmation is needed; with invite the people are told at once, so it needs user_confirmed and refuses
     more than 20 people."""
     async with call("save_call_link") as c:
+        title = title.strip()
+        if not _visible(title):
+            raise invalid("title is empty: give the meeting a name. Nothing was created.")
         people = [await resolve_person(c, p) for p in invite or []]
         receipt = c.guard(kind="call", user_confirmed=user_confirmed, people=len(people)) if people else {}
         r = await c.vk.rapi(
