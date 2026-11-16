@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3 (2026-11-16)
+
+Fixes from the fifth QA round.
+
+- Control characters, private-use and unassigned code points count as invisible: a poll answer, a message
+  or an edit made only of them is refused. Live, a poll answer of U+0001 alone was sent and kept. Emoji
+  blocks stay visible, so an emoji newer than the server's Unicode database is not taken for empty.
+- A reply to someone else's message names the quoted author among the draft's mentions and counts them
+  towards the 20-people cap: VK Teams notifies them (live: 20 mentions and a quote recorded 21).
+
 ## 0.2.2 (2026-11-16)
 
 Fixes from the fourth QA round.

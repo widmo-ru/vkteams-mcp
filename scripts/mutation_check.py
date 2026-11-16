@@ -108,8 +108,36 @@ MUTATIONS = [
     (
         "blank glyphs are invisible",
         "tools/messages.py",
-        [("not ch.isspace() and ch not in _BLANK_GLYPHS and", "not ch.isspace() and")],
+        [("        and ch not in _BLANK_GLYPHS\n", "")],
         ["tests/unit/test_qa_attacks.py::test_blank_letters_are_invisible_in_a_draft_and_an_edit"],
+    ),
+    (
+        "controls and unassigned are invisible",
+        "tools/messages.py",
+        [
+            (
+                '_INVISIBLE = frozenset({"Cc", "Cf", "Cn", "Co", "Cs", "Mn", "Me", "Zs", "Zl", "Zp"})',
+                '_INVISIBLE = frozenset({"Cf", "Mn", "Zs"})',
+            )
+        ],
+        ["tests/unit/test_qa_attacks.py::test_a_poll_answer_of_control_or_unassigned_characters_is_refused"],
+    ),
+    (
+        "new emoji stay visible",
+        "tools/messages.py",
+        [
+            (
+                "(unicodedata.category(ch) not in _INVISIBLE or _is_emoji_base(ch))",
+                "unicodedata.category(ch) not in _INVISIBLE",
+            )
+        ],
+        ["tests/unit/test_qa_attacks.py::test_an_emoji_newer_than_the_servers_unicode_is_visible"],
+    ),
+    (
+        "the quoted author counts as mentioned",
+        "tools/messages.py",
+        [("            notified.add(author)\n", "")],
+        ["tests/unit/test_qa_attacks.py::test_a_reply_counts_the_quoted_author_towards_the_people_cap"],
     ),
     (
         "an edit must be visible",

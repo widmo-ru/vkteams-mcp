@@ -1,3 +1,3 @@
 """VK Teams connector for AI agents."""
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"

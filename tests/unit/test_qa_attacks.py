@@ -376,3 +376,70 @@ def test_a_buttons_print_depends_on_the_servers_secret(server, monkeypatch):
     monkeypatch.setattr(rt, "settings", dataclasses.replace(rt.settings, secret="another secret " * 4))
     after = [button_token(1, {"text": f"b{i}", "callbackData": str(i)}) for i in range(8)]
     assert all(a != b for a, b in zip(before, after, strict=True))
+
+
+# ---------------------------------------------------------------- round 5 (re-check of 0.2.2)
+# D28 control characters, private-use and unassigned code points count as visible: a poll answer of U+0001
+#     alone was saved and sent, and VK Teams kept it (live). A message or an edit of them passes the same way.
+# R21 a reply makes VK Teams add the quoted author to the mentions (live: 20 mentions + quote = 21 recorded);
+#     the preview lists only the 20, so the person does not see who else is notified.
+
+
+@pytest.mark.parametrize("blank", ["\u0001", "\u007f", "\x00", "", "͸", "\u0001\u0002 \u001f"])
+async def test_a_poll_answer_of_control_or_unassigned_characters_is_refused(server, chats, blank):
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "q?", "poll_options": ["yes", blank]})
+    assert r.is_error, repr(blank)
+
+
+@pytest.mark.parametrize("blank", ["\u0001", "\u007f\u0001"])
+async def test_a_message_of_control_characters_is_empty(server, chats, blank):
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": blank})
+    assert r.is_error, repr(blank)
+
+
+async def test_an_edit_to_control_characters_is_refused(server, chats):
+    chats.rapi("getHistory", history_like_vk([{"msgId": 5, "time": 1, "outgoing": True, "text": "mine"}]))
+    r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "5", "action": "edit", "text": "\u0001", "user_confirmed": True},
+    )
+    assert r.is_error and chats.writes() == []
+
+
+_QUOTED = {"msgId": 7, "time": 1, "outgoing": False, "chat": {"sender": "bob@example.com"}, "text": "hi"}
+
+
+async def test_a_reply_lists_the_quoted_author_among_the_mentions(server, chats):
+    """R21: VK Teams notifies the author of a quoted message (live), so the preview says so."""
+    chats.rapi("getHistory", history_like_vk([_QUOTED]))
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "ok @[ann@example.com]", "reply_to": "7"})
+    assert not r.is_error, r.content
+    assert set(r.structured_content["mentions"]) == {"ann@example.com", "bob@example.com"}
+
+
+async def test_a_reply_counts_the_quoted_author_towards_the_people_cap(server, chats):
+    chats.rapi("getHistory", history_like_vk([_QUOTED]))
+    text = " ".join(f"@[p{i}@example.com]" for i in range(20))
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": text, "reply_to": "7"})
+    assert r.is_error
+
+
+async def test_replying_to_your_own_message_mentions_nobody_new(server, chats):
+    chats.rapi("getHistory", history_like_vk([{**_QUOTED, "outgoing": True}]))
+    text = " ".join(f"@[p{i}@example.com]" for i in range(20))
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": text, "reply_to": "7"})
+    assert not r.is_error, r.content
+
+
+async def test_an_emoji_newer_than_the_servers_unicode_is_visible(server, chats, monkeypatch):
+    """U+1FAE9 is unassigned in Unicode 15 and an emoji in 16: clients draw it, so it is not empty. The lookup
+    is pinned to the old answer, so the test means the same on every Python."""
+    import unicodedata
+
+    from vkteams_mcp.tools import messages
+
+    real = unicodedata.category
+    monkeypatch.setattr(messages.unicodedata, "category", lambda ch: "Cn" if ch == "\U0001fae9" else real(ch))
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "q?", "poll_options": ["\U0001fae9", "no"]})
+    assert not r.is_error, r.content

@@ -306,6 +306,13 @@ async def _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, att
             "chat": {"sn": sn},
             "text": {"plain": message_text(m) or " "},
         }
+        author = quote["sn"]
+        if not m.get("outgoing") and author and author != c.me and author not in notified:
+            # live: VK Teams adds the quoted author to the mentions, so they count and the preview names them
+            notified.add(author)
+            if len(notified) > MAX_PEOPLE:
+                raise VKError("too_many", limit=MAX_PEOPLE, what="people mentioned", count=len(notified))
+            mentioned.append(author)
     if poll_options is not None and not 2 <= len(poll_options) <= MAX_POLL_OPTIONS:
         raise invalid(f"A poll has 2 to {MAX_POLL_OPTIONS} answers. Nothing was saved.")
     if poll_options is not None:
@@ -594,11 +601,18 @@ def _visible(text: str) -> bool:
     """Something a person can see: not only spaces and zero-width or format characters (U+200B, U+2060, BOM).
     Live: VK Teams accepts a poll answer of U+200B alone."""
     return any(
-        not ch.isspace() and ch not in _BLANK_GLYPHS and unicodedata.category(ch) not in ("Cf", "Mn", "Zs")
+        not ch.isspace()
+        and ch not in _BLANK_GLYPHS
+        and (unicodedata.category(ch) not in _INVISIBLE or _is_emoji_base(ch))
         for ch in text
     )
 
 
+# Draw nothing on screen: controls, format, unassigned, private use and surrogates (QA round 5), combining
+# marks and separators. Private use has no glyph in VK Teams clients. A code point unassigned in this Python's
+# Unicode database may be an emoji newer than it, so the emoji blocks are kept visible whatever their category.
+# An unused position there is drawn as a box by the clients, which is not blank either.
+_INVISIBLE = frozenset({"Cc", "Cf", "Cn", "Co", "Cs", "Mn", "Me", "Zs", "Zl", "Zp"})
 # Letters and symbols by category that draw nothing: Hangul fillers and the blank Braille pattern (QA round 4)
 _BLANK_GLYPHS = frozenset("\u115f\u1160\u3164\uffa0\u2800")
 
