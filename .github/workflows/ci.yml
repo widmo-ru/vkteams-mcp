@@ -95,11 +95,11 @@ jobs:
             "http://127.0.0.1:8002/authorize?response_type=code&client_id=$cid&redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb&state=s&code_challenge=$(printf 'x%.0s' {1..43})&code_challenge_method=S256")"
           echo "replica two: $code"
           case "$code" in 302\ https://mcp.example.org/signin?request=*) ;; *) exit 1 ;; esac
-          # and a client id it did not issue is refused
-          bad="$(curl -s -m 5 -w ' %{http_code}' -H 'Host: mcp.example.org' \
+          # and a client id it did not issue is refused with a page for the person, not a redirect
+          bad="$(curl -s -m 5 -w ' %{http_code} %{redirect_url}' -H 'Host: mcp.example.org' -H 'Accept-Language: en' \
             "http://127.0.0.1:8002/authorize?response_type=code&client_id=made-up&redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb&state=s&code_challenge=$(printf 'x%.0s' {1..43})&code_challenge_method=S256")"
-          echo "made-up client: $bad"
-          case "$bad" in *invalid_request*400) ;; *) exit 1 ;; esac
+          echo "made-up client: ${bad##*</html>}"
+          case "$bad" in *'<h1>Connect again</h1>'*'</html> 400 ') ;; *) exit 1 ;; esac
       - name: Server log
         if: always()
         run: docker logs mcp 2>&1 | tail -50 || true
