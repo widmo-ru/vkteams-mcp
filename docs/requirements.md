@@ -3,7 +3,7 @@
 The tool surface, what each tool calls upstream, and every refusal. A row in a **Must refuse** table
 names the test that proves it; `tests/unit/test_gates.py::test_every_must_refuse_row_names_a_test_that_exists`
 fails when a row names a test that does not exist. `scripts/mutation_check.py` removes the guards behind
-most rows (its list names them) and requires their tests to fail; the rest are held by their tests alone. Refusals of a malformed argument (empty text, a
+most rows (its list names them) and requires their tests to fail; their tests alone hold the rest. Refusals of a malformed argument (empty text, a
 poll of one answer, a missing reaction) are covered by the tool tests and are not listed here.
 
 Upstream shapes are the ones recorded in `docs/live-findings.md`. `{base}` is `https://<main-api
@@ -77,8 +77,8 @@ history, not in events), and one draft per chat means writing it would overwrite
 typing in their app at that moment.
 
 ### send_draft (messages, notifies others)
-Args: `chat`, `user_confirmed`. Sends the latest draft saved for the chat, exactly as saved — the
-model can see it, the person's app draft is never read — with
+Args: `chat`, `user_confirmed`. Sends the latest draft saved for the chat, as saved (the model can see it; the server never reads the
+person's app draft), with
 `rapi/message/send {target, localMsgId, parts:{mainPart, quoteParts}, schedule?}`; files attached by
 their upload ids. Refuses when no draft was saved, or when an announced upload never arrived.
 Upload links expire after 600 s and work once; an empty upload is refused (400) and one over 100 MB

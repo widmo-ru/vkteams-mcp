@@ -21,15 +21,14 @@ Two principles:
 
 - **The smallest context for the agent.** 12 tools and about 4,100 tokens of catalogue by default
   (14 tools and about 4,800 tokens with group administration on; counted with the `o200k_base`
-  tokenizer). One tool per question a person
-  asks, not one per API method.
+  tokenizer). Each tool answers one question a person asks.
 - **Tools that carry the logic.** The server finds a chat or a person by name, turns an `@address`
   into a mention, picks the right one of four history and search methods, and moves files through
-  links that expire in minutes instead of through the model's context. It refuses what must not
-  happen: every refusal is written down and has a test that fails when its guard is removed.
+  links that expire in minutes, outside the model's context. It refuses what must not happen. We list
+  every refusal in the requirements, and each has a test that fails when its guard is removed.
 
-The server acts as one person, with their own VK Teams account, and nothing more. The rules every
-change is held to are in the [manifesto](MANIFESTO.md).
+The server acts as one person, with their own VK Teams account, and nothing more. The
+[manifesto](MANIFESTO.md) holds the rules review applies to every change.
 
 ## How it looks
 
@@ -47,7 +46,7 @@ page speaks the browser's language, Russian or English.
 | `list_chats` | What is new? Which chats have unread messages? |
 | `get_chat` | What is this chat, who is in it? |
 | `update_chat` | Mark read, mute, archive, follow a thread, leave. |
-| `list_messages` | What was said here? Find the message about X. What reactions? |
+| `list_messages` | What did people write here? Find the message about X. Which reactions, and how many? |
 | `save_draft` → `send_draft` | Write: a draft first, sent only after a yes. Mentions, replies, polls, files, send later. |
 | `update_message` | Fix, delete, pin, react, vote, close a poll, cancel a scheduled message. |
 | `find_people` | Who is X? What is their address? |
@@ -66,12 +65,12 @@ Every tool's contract: [`docs/requirements.md`](docs/requirements.md).
 - It cannot spam. One allowance per person: 10 actions at once, then one every 6 seconds. At most
   20 people per action, mentions included.
 - Only your own messages change: edit and delete check the author first.
-- Text written by others comes back as data, not instructions, inside markers with a one-time code;
-  a forged marker is defanged. The model never sees a bot's button data at all: a button is shown by
+- Text written by others comes back inside markers with a one-time code, marked as data for the model;
+  the server defangs a forged marker. The model never sees a bot's button data at all: a button is shown by
   number, the server assembles the press itself, and it refuses if the bot changed that button.
 - Files never pass through the model. An attachment is a file name in the current folder, never a
   path, and the upload command runs curl with `--globoff`, so `{a,b}` cannot expand into another file.
-- Some operations simply do not exist: profile, status and nick changes, session resets, abuse
+- Some operations do not exist here: profile, status and nick changes, session resets, abuse
   reports, SMS, history wipes, privacy lists.
 
 ## Server security
@@ -80,7 +79,7 @@ Every tool's contract: [`docs/requirements.md`](docs/requirements.md).
 |---|---|
 | The model never sees the sign-in code | It is typed on this server's sign-in page only |
 | A leaked database without the secret gives little | VK Teams sessions and drafts are sealed with AES-GCM; our tokens are stored as hashes |
-| The sign-in page is not an attack tool | The server address must be the https name of a real VK Teams installation. Every connection is checked when it is made, so by default no name can lead into a private network. The exception is `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1` for a server inside a company network; then pin the installation in `VKTEAMS_MCP_INSTALLATIONS`. Code e-mails are rate-limited |
+| The sign-in page is not an attack tool | The server address must be the https name of a real VK Teams installation. The server checks every connection when it opens it, so by default no name can lead into a private network. The exception is `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1` for a server inside a company network; then pin the installation in `VKTEAMS_MCP_INSTALLATIONS`. Code e-mails are rate-limited |
 | OAuth 2.1 | Client registration, PKCE, one-hour access tokens, rotating refresh tokens; reusing an old one revokes the whole chain |
 | Logs carry no content | A test runs a full message flow and fails if any text, address or `aimsid` appears in the logs |
 
@@ -100,12 +99,12 @@ Every tool's contract: [`docs/requirements.md`](docs/requirements.md).
 
 Sources, most trusted first:
 
-1. **A live server.** Every request was checked against a real VK Teams (API 139). What the server
-   actually does is in [`docs/live-findings.md`](docs/live-findings.md). For example, `fromMsgId` in
+1. **A live server.** We checked every request against a real VK Teams (API 139).
+   [`docs/live-findings.md`](docs/live-findings.md) records what the server does. For example, `fromMsgId` in
    history excludes the message itself, and message ids exceed 2^53, so a JavaScript client rounds
    them when they are sent as numbers.
 2. **The open-source [im-desktop](https://github.com/mail-ru-im/im-desktop)** (Apache-2.0, by VK). The
-   desktop client: the session signature, group parameters, muting for good. No code was copied from it.
+   desktop client: the session signature, group parameters, muting for good. We used it as a reference for request shapes.
 3. **Unofficial API descriptions.** Where they disagree with the live server, the server wins.
 
 A reference for the client API, with the signature formulas: [`CHEATSHEET.md`](CHEATSHEET.md).
@@ -136,7 +135,7 @@ docker run -p 127.0.0.1:8000:8000 -v vkteams-data:/data \
 | `VKTEAMS_MCP_PUBLIC_URL` | The https address clients reach this server on (required) |
 | `VKTEAMS_MCP_SECRET` | At least 32 random characters; seals sessions and signs cursors (required; keep it) |
 | `VKTEAMS_MCP_DATABASE` | SQLite file (default `vkteams-mcp.sqlite`; `/data/…` in the image) |
-| `VKTEAMS_MCP_INSTALLATIONS` | Comma-separated VK Teams hosts this connector serves; with exactly one, the sign-in page asks only the e-mail |
+| `VKTEAMS_MCP_INSTALLATIONS` | Comma-separated VK Teams hosts this connector serves; with one host, the sign-in page asks only the e-mail |
 | `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS` | `1` when the server runs inside a company network next to its VK Teams |
 | `VKTEAMS_MCP_AREAS` | Areas to publish (default all but `chat_admin`) |
 | `VKTEAMS_MCP_TIMEZONE` | Time zone for times shown and for `send_at` (default `Europe/Moscow`) |
@@ -145,9 +144,9 @@ docker run -p 127.0.0.1:8000:8000 -v vkteams-data:/data \
 
 The container speaks plain HTTP on port 8000. Put a reverse proxy that terminates TLS for
 `VKTEAMS_MCP_PUBLIC_URL` in front of it: OAuth and sign-in codes must travel over HTTPS. Run one
-replica: rate limits and file links are held in memory.
+replica: the server keeps rate limits and file links in memory.
 
-Corporate VK Teams servers are usually reachable only inside the company network. Run the connector
+Most corporate VK Teams servers answer only inside the company network. Run the connector
 there, pinned to that one installation, with `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1`.
 
 ## Develop

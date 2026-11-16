@@ -61,7 +61,7 @@ docstring инструментов. Живой прогон: 2026-11-16, сер�
 | D4 | реакция — ровно один эмодзи, иначе отказ до VK | `test_a_reaction_that_is_not_one_emoji_is_refused_before_vk` |
 | D5 | в истории вместо `has_reactions` — `reactions:[{emoji, count}]`, один `reaction/get` на страницу; снятые не показываются | `test_history_shows_reaction_counts_and_nothing_once_they_are_taken_back` |
 
-## Замечания (не дефекты, но странно)
+## Замечания
 
 | № | Где | Что |
 |---|---|---|
@@ -335,7 +335,7 @@ docstring инструментов. Живой прогон: 2026-11-16, сер�
 
 ## Раунд 2: атаки (2026-11-16, 13:00–13:10)
 
-Цель — сломать, а не пройти. Тесты: `tests/unit/test_qa_attacks.py` (все зелёные после исправлений).
+Задача раунда: сломать сервер. Тесты: `tests/unit/test_qa_attacks.py` (все зелёные после исправлений).
 
 ### Новые дефекты
 

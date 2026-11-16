@@ -1,4 +1,4 @@
-# VK Teams / VK WorkSpace client API — cheat sheet (verified live, api v139)
+# VK Teams / VK WorkSpace client API: cheat sheet (verified live, api v139)
 
 Source of truth: `info.x-live-findings` and per-operation `x-live-probe` / `x-live-test` in the OpenAPI file.
 Re-verify: `uv run python tests/live/legacy_login.py --host <host>` → `uv run pytest tests/live`. The suites that check
@@ -96,7 +96,7 @@ Signature:
 | Code | Meaning |
 |---|---|
 | 20000 / 20001 | OK / OK-empty |
-| 20070 | partial failure — read `results.failures[{id,error}]` |
+| 20070 | partial failure: read `results.failures[{id,error}]` |
 | 20080 | accepted, answer async |
 | 40000 / 40001 / 40200 / 40400 | bad request / refused / bad token / bad target |
 | 50000 | server error or timeout |
@@ -110,14 +110,14 @@ Signature:
 | Edit | same + `updateMsgId` |
 | Scheduled | same + `schedule:{scheduledTime:<unix s>}` → **20020**, `results.scheduled.scheduledMsgId` |
 | Scheduled list / cancel / send now | `message/scheduled/history/get {sn, historyVersion:"0"}` → `messages.new[]`; `…/cancel {sn, scheduledMsgIds}`; `…/flush {sn, scheduledMsgIds}` |
-| Trap | wrong `parts` shape → `40000 DLP error - Invalid request` (it is a format error, not DLP) |
+| Trap | wrong `parts` shape → `40000 DLP error - Invalid request` (the shape is wrong; the same text in the right shape goes through) |
 
 ## 8. Open
 
 | What | Why |
 |---|---|
 | Group members add / roles / block on a real member | needs a 2nd account; Metabot refuses (`bot_setjoingroups_false`) |
-| `profile/update` | changes your visible name; server flags forbid self name change — not run |
-| `status/set`, `setNick`, `session/reset*`, `reportAbuse`, `misc/support` | visible to others or destructive — not run |
+| `profile/update` | changes your visible name; server flags forbid self name change; not run |
+| `status/set`, `setNick`, `session/reset*`, `reportAbuse`, `misc/support` | visible to others or destructive; not run |
 | `misc/preview/getURLContent` | 500 for external URLs (closed perimeter) |
 | okcalls/*, reactions/v2/*, rapi tasks/* | not routed on this server version |

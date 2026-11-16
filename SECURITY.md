@@ -1,6 +1,6 @@
 # Security
 
-Report a vulnerability privately through GitHub:
+Report a vulnerability through GitHub's private form:
 [Security → Report a vulnerability](https://github.com/widmo-ru/vkteams-mcp/security/advisories/new).
 Never in a public issue.
 

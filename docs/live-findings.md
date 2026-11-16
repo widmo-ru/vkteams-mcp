@@ -51,7 +51,7 @@ Where the reverse-engineered descriptions in circulation say otherwise, this fil
 
 | Finding | Test |
 |---|---|
-| `message/send` takes `parts` as an OBJECT `{mainPart:{text:{plain}}, quoteParts:[…]}`; a wrong shape answers `40000 DLP error - Invalid request` — a format error, not the DLP system. | `test_messages.py::test_send_draft_sends_exactly_the_saved_text_once` |
+| `message/send` takes `parts` as an OBJECT `{mainPart:{text:{plain}}, quoteParts:[…]}`; a wrong shape answers `40000 DLP error - Invalid request`, and the right shape with the same text goes through. | `test_messages.py::test_send_draft_sends_exactly_the_saved_text_once` |
 | Mentions are `@[<sn>]` in the text; the server parses them. | `test_messages.py::test_mentions_are_resolved_by_name_into_the_text` |
 | `schedule: {scheduledTime: <unix seconds>}` queues the message (`20020`); `message/scheduled/history/get` returns `messages.new[]`. | `test_messages.py::test_a_scheduled_draft_is_queued` |
 | A send time a year ahead is accepted; decades ahead are refused only at send ("Scheduled time is too far in the future"). An empty poll answer is refused only at send as well. A message id past 64 bits answers "Invalid json". | live, QA round 2 (`docs/qa-scenarios.md`); the local guards: `test_qa_attacks.py` |
