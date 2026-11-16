@@ -1,0 +1,7 @@
+vkteams-mcp
+Copyright 2026 Widmo
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Includes the fonts Space Grotesk, Instrument Sans and JetBrains Mono under the SIL Open Font
+License 1.1; see src/vkteams_mcp/static/fonts/OFL-*.txt.

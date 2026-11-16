@@ -1,0 +1,11 @@
+results/
+.venv/
+__pycache__/
+.ref/
+*.sqlite
+*.sqlite-*
+*.secret
+.env
+.env.*
+dist/
+session.json

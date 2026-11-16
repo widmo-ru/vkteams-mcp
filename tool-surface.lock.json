@@ -1,0 +1,174 @@
+{
+  "tools": {
+    "download_file": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Download a file"
+      },
+      "area": "files",
+      "gates": {},
+      "input_schema_sha256": "727444038797d153c1e46e400beb50c1b8356d7f14c7281547f5c97878f8ce31"
+    },
+    "find_people": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Find people"
+      },
+      "area": "people",
+      "gates": {},
+      "input_schema_sha256": "af35a68475f4c35ede71fb2645eb26ca5d2b2c8a8d5bcfdbd677ef1008f0e121"
+    },
+    "get_chat": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Chat details"
+      },
+      "area": "chats",
+      "gates": {},
+      "input_schema_sha256": "9d97c19ccbf92b5d3f3b9bc5e8e0054722c0d8e811e8b38a5b6ed4506f2791c0"
+    },
+    "get_connection": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Connection"
+      },
+      "area": "account",
+      "gates": {},
+      "input_schema_sha256": "1831e96f8dcd928826894a0e437ae1e70d443e6f7ec6da7c2432a64be17bab8c"
+    },
+    "list_chats": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "List chats"
+      },
+      "area": "chats",
+      "gates": {},
+      "input_schema_sha256": "5842c05694b4d2989680faea8f1f79c8e8b3f0d36b385bdaf50ff9d94372f23b"
+    },
+    "list_messages": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Read or search messages"
+      },
+      "area": "messages",
+      "gates": {},
+      "input_schema_sha256": "53d88c4b649bc0af03fa7740a216bf577908032a9f6ca8bc1600753751cdbb50"
+    },
+    "respond_to_bot": {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Talk to a bot"
+      },
+      "area": "bots",
+      "gates": {},
+      "input_schema_sha256": "f881a08be7760d12e4684758fd76b722c11683c1292cf555e7687c69056d7ef2"
+    },
+    "save_call_link": {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Create a call link"
+      },
+      "area": "calls",
+      "gates": {},
+      "input_schema_sha256": "5f2ac0076b81d957ff088cee256fda59cddaf7aee17e953c9b360524e67f60b2"
+    },
+    "save_chat": {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Create or change a group"
+      },
+      "area": "chat_admin",
+      "gates": {},
+      "input_schema_sha256": "047ca3b2e07fa7bf50003bc158d4a2606d043ae2c1326162d59b5703a03b596a"
+    },
+    "save_draft": {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Save a draft"
+      },
+      "area": "messages",
+      "gates": {
+        "attach": "files"
+      },
+      "input_schema_sha256": "591d40a9182e671604d6d204b2a4d5e032d3050c5b6d62737b47834a7f25433a"
+    },
+    "send_draft": {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Send the draft"
+      },
+      "area": "messages",
+      "gates": {},
+      "input_schema_sha256": "7d0bd515a88463894ec4ba0d2bc510368178729272f8957f4b90bfb31d7126b8"
+    },
+    "update_chat": {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Change my chat state"
+      },
+      "area": "chats",
+      "gates": {},
+      "input_schema_sha256": "83df811bd8f3208aeda131f874f8af353bcc538f9364b0db2ee9455ccb1ef757"
+    },
+    "update_chat_members": {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Manage group members"
+      },
+      "area": "chat_admin",
+      "gates": {},
+      "input_schema_sha256": "84f6403c8ef278e649e089dc0c8d0b8a1b09745687e6677188fea32414b7199d"
+    },
+    "update_message": {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Change a message"
+      },
+      "area": "messages",
+      "gates": {},
+      "input_schema_sha256": "f2bf3d15fb1caaf164348b750a0f9b3e31f00a90244bde4358952d9e8e50f941"
+    }
+  }
+}

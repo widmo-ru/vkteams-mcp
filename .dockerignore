@@ -1,0 +1,7 @@
+.venv
+.ref
+results
+.git
+__pycache__
+tests
+*.sqlite

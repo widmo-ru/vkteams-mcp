@@ -1,0 +1,73 @@
+[project]
+name = "vkteams-mcp"
+version = "0.1.0"
+description = "VK Teams connector for AI agents: one person's chats, messages and files over MCP, with the smallest context and tools that carry the logic."
+readme = "README.md"
+authors = [
+    { name = "Widmo", email = "developer@widmo.ru" }
+]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["mcp", "vk-teams", "vk-workspace", "ai-agents", "oauth"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+]
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=50.0.2",
+    "httpx>=0.28.1",
+    "mcp>=1.20",
+    "pydantic>=2.14.3",
+    "uvicorn>=0.54.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/widmo-ru/vkteams-mcp"
+Issues = "https://github.com/widmo-ru/vkteams-mcp/issues"
+Company = "https://widmo.ru"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    # the live suite only: never in the image
+    "jsonschema>=4.26.0",
+    "pyyaml>=6.0.3",
+    "referencing>=0.37.0",
+    "ruamel-yaml>=0.19.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "respx>=0.23.1",
+    "ruff>=0.17.5",
+    "tiktoken>=0.14.0",
+]
+
+[project.scripts]
+vkteams-mcp = "vkteams_mcp.app:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["tests/live", "tests/unit"]
+testpaths = ["tests/unit"]
+asyncio_mode = "auto"
+addopts = "--strict-markers"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["live: talks to a real VK Teams server; run explicitly with `pytest tests/live`"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = [".ref", "tests/live"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC"]
+ignore = ["S101", "S105", "S106", "B008", "UP040"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "E501"]
+"src/vkteams_mcp/signin.py" = ["E501"]  # the page's inline CSS
+
+[tool.ruff.format]
+quote-style = "double"

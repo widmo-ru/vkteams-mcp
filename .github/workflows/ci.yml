@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint, tests, gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --frozen
+      - name: Format
+        run: uv run ruff format --check src tests scripts
+      - name: Lint
+        run: uv run ruff check src tests scripts
+      - name: Unit tests
+        run: uv run pytest -q
+      - name: Every guard is held by a test
+        run: uv run python scripts/mutation_check.py
+      - name: Tool catalogue within its token budget
+        run: uv run python -m vkteams_mcp.budget --check
+      - name: Tool surface matches the lock file
+        run: uv run python -m vkteams_mcp.surface --check
+
+  image:
+    name: image builds and answers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: docker build -t vkteams-mcp:ci .
+      - name: Start and probe
+        run: |
+          set -euo pipefail
+          docker run -d --name mcp -p 127.0.0.1:8000:8000 \
+            -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org \
+            -e VKTEAMS_MCP_SECRET="$(openssl rand -base64 48)" \
+            vkteams-mcp:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/healthz
+          # the OAuth metadata names the public address, so the server read its configuration
+          curl -fsS http://127.0.0.1:8000/.well-known/oauth-authorization-server | grep -q '"issuer":"https://mcp.example.org"'
+          # the process runs as the image's configured user, and that user is not root
+          want="$(docker inspect -f '{{.Config.User}}' vkteams-mcp:ci)"
+          got="$(docker exec mcp id -u)"
+          echo "image user: ${want:-<none>}, running as uid: $got"
+          test -n "$want" && test "$got" = "$want" && test "$got" != 0
+      - name: Server log
+        if: always()
+        run: docker logs mcp 2>&1 | tail -50 || true
