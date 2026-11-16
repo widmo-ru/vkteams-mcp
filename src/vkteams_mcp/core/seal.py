@@ -58,6 +58,8 @@ class Sealer:
             return None
         try:
             raw = _unb64(blob)
+            if _b64(raw) != blob:  # one spelling per blob: the spare bits of the last character must be zero
+                return None
             body = json.loads(zlib.decompress(self._aead.decrypt(raw[:12], raw[12:], kind.encode())))
         except (ValueError, InvalidTag, zlib.error, json.JSONDecodeError, TypeError):
             return None

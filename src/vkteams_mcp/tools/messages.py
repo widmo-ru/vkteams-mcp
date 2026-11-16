@@ -535,8 +535,10 @@ async def update_message(
         if action == "edit" and len(_native_mentions(text)) > MAX_PEOPLE:
             # live: an edit to 21 @[address] made VK Teams record 21 mentions, so edits keep the cap too
             raise VKError("too_many", limit=MAX_PEOPLE, what="people mentioned", count=len(_native_mentions(text)))
-        if action == "react" and not (reaction and _one_emoji(reaction)):
+        if action == "react" and not reaction:
             raise invalid("react needs reaction: one emoji, such as 👍. Nothing was changed.")
+        if action == "react" and not _one_emoji(reaction):
+            raise invalid("reaction must be one emoji, such as 👍. Nothing was changed.")
         if action == "vote" and option is None:
             raise invalid("vote needs option: the option number. Nothing was changed.")
         if action in ("edit", "delete"):

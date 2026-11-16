@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4 (2026-11-16)
+
+From the sixth QA round, a full regression of 158 scenarios with no failures.
+
+- A sealed link, token or draft has one spelling: the spare bits of its last character must be zero, so
+  four spellings of one link no longer all work.
+- A reaction that is not one emoji is refused as such, not as a missing reaction.
+
 ## 0.2.3 (2026-11-16)
 
 Fixes from the fifth QA round.

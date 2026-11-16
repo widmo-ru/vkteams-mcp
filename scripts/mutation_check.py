@@ -140,6 +140,12 @@ MUTATIONS = [
         ["tests/unit/test_qa_attacks.py::test_a_reply_counts_the_quoted_author_towards_the_people_cap"],
     ),
     (
+        "a sealed blob has one spelling",
+        "core/seal.py",
+        [("            if _b64(raw) != blob:", "            if False:")],
+        ["tests/unit/test_qa_attacks.py::test_a_sealed_blob_has_one_spelling"],
+    ),
+    (
         "an edit must be visible",
         "tools/messages.py",
         [('if action == "edit" and not _visible(text or ""):', 'if action == "edit" and not (text or "").strip():')],
@@ -282,7 +288,7 @@ MUTATIONS = [
     (
         "a reaction is one emoji",
         "tools/messages.py",
-        [("not (reaction and _one_emoji(reaction))", "not reaction")],
+        [('if action == "react" and not _one_emoji(reaction):', "if False:")],
         ["tests/unit/test_qa_live_scenarios.py::test_a_reaction_that_is_not_one_emoji_is_refused_before_vk"],
     ),
     (

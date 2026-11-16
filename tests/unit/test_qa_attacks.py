@@ -443,3 +443,34 @@ async def test_an_emoji_newer_than_the_servers_unicode_is_visible(server, chats,
     monkeypatch.setattr(messages.unicodedata, "category", lambda ch: "Cn" if ch == "\U0001fae9" else real(ch))
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "q?", "poll_options": ["\U0001fae9", "no"]})
     assert not r.is_error, r.content
+
+
+# ---------------------------------------------------------------- round 6 (full regression on 0.2.3)
+# R22 the last character of a sealed link carries two unused bits: four spellings of one link worked.
+# R24 reaction="not-an-emoji" was answered "react needs reaction", though a reaction was given.
+
+
+def test_a_sealed_blob_has_one_spelling():
+    from vkteams_mcp.core.seal import Sealer, _unb64
+
+    s = Sealer("s" * 40, clock=lambda: 1_800_000_000)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    respellings = []
+    for n in range(12):  # lengths vary with the payload: collect blobs whose last character has spare bits
+        blob = s.seal("download", {"a": "x" * n}, 60)
+        assert s.open("download", blob) is not None
+        raw = _unb64(blob)
+        respellings += [o for ch in alphabet if (o := blob[:-1] + ch) != blob and _unb64(o) == raw]
+    assert respellings  # the same bytes, spelled differently: what the guard is about
+    assert [o for o in respellings if s.open("download", o) is not None] == []
+
+
+async def test_a_reaction_that_is_not_one_emoji_is_named_as_such(server, chats):
+    chats.rapi("getHistory", history_like_vk([{"msgId": 5, "time": 1, "outgoing": True, "text": "mine"}]))
+    r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "5", "action": "react", "reaction": "not-an-emoji", "user_confirmed": True},
+    )
+    text = r.content[0].text
+    assert r.is_error and "needs reaction" not in text and "one emoji" in text, text
