@@ -70,22 +70,26 @@ given as a number is refused.
 Args: `chat` (a thread id sends into the thread), `text` (an `@address` in it becomes a mention),
 `mention?` (names or addresses), `reply_to?` (message id), `poll_options?`, `send_at?` (local time),
 `attach?` (file names to upload; gated by area files).
-Keeps the draft **on this server**, one per person and chat, for 24 hours, and returns a preview with
-the mentions resolved; with `attach` it also returns one short-lived signed upload link per file.
-It does not call VK Teams `draft/set`: live 2026-11-15, the client API never returns a draft (not in
-history, not in events), and one draft per chat means writing it would overwrite text the person is
+Returns a preview with the mentions resolved and a sealed `draft` (24 hours) that only `send_draft`
+can open; the server keeps nothing. With `attach` it also returns one short-lived upload command per
+file. It does not call VK Teams `draft/set`: live 2026-11-15, the client API never returns a draft (not
+in history, not in events), and one draft per chat means writing it would overwrite text the person is
 typing in their app at that moment.
 
 ### send_draft (messages, notifies others)
-Args: `chat`, `user_confirmed`. Sends the latest draft saved for the chat, as saved (the model can see it; the server never reads the
-person's app draft), with
-`rapi/message/send {target, localMsgId, parts:{mainPart, quoteParts}, schedule?}`; files attached by
-their upload ids. Refuses when no draft was saved, or when an announced upload never arrived.
-Upload links expire after 600 s and work once; an empty upload is refused (400) and one over 100 MB
-too (413); at most three uploads are received at once. Files go first, at the draft's send time too. Each part has a stable `localMsgId` and is marked sent as
-it goes, so a retry after a partial failure resumes instead of posting a file twice; one send per
-person and chat runs at a time. Returns `{chat, message, at | scheduled_for, files_sent, sends_left}`
-and forgets the draft.
+Args: `chat`, `draft` (from `save_draft`), `files?` (the sealed file each upload printed),
+`user_confirmed`. Sends the draft as saved with
+`rapi/message/send {target, localMsgId, parts:{mainPart, quoteParts}, schedule?}`. Refuses a draft made
+for another person or chat, an altered or expired one, and a draft whose uploads are not all in
+`files`. Upload links expire after 600 s; an upload runs once at a time per replica and may be repeated within
+the link's life (a lost response); an empty upload is refused (400)
+and one over 100 MB too (413); at most three uploads are received at once per replica. Files go first,
+at the draft's send time too. Each part has a `localMsgId` fixed in the draft, and VK Teams answers a
+resend with the same id with the same message (live), so sending the same draft again, whole or after
+a partial failure, posts nothing twice. A scheduled resend is not deduplicated by VK Teams (live), so
+for a plain text part the queue is checked first: the same text at the same time already queued is
+reported, not queued again. A scheduled poll or quote is not checked (the queue does not show them), and
+two replicas sending the same scheduled draft at the same moment can both queue it.
 
 ### update_message (messages, notifies others)
 Args: `chat`, `message`, `action: edit|delete|pin|unpin|react|unreact|vote|unvote|close_poll|
@@ -148,7 +152,11 @@ partial result: the tool reports who failed and why.
 | Refusal | Test |
 |---|---|
 | send_draft without user_confirmed | tests/unit/test_messages.py::test_send_draft_needs_confirmation |
-| send_draft with no draft saved here | tests/unit/test_messages.py::test_send_draft_without_a_saved_draft |
+| send_draft with a draft that save_draft did not make for this chat | tests/unit/test_messages.py::test_send_draft_without_a_saved_draft |
+| send_draft with a draft of another person, an altered one or one older than 24 hours | tests/unit/test_replicas.py::test_a_draft_of_another_person_altered_or_expired_is_refused |
+| a draft too large to seal | tests/unit/test_replicas.py::test_save_draft_refuses_a_draft_too_large_to_seal |
+| reporting a disconnect as done while VK Teams is down | tests/unit/test_replicas.py::test_a_disconnect_while_vk_teams_is_down_is_reported |
+| a poll answer over 300 characters | tests/unit/test_replicas.py::test_a_long_poll_answer_is_refused_at_save |
 | send_draft while an announced file has not been uploaded | tests/unit/test_messages.py::test_send_draft_waits_for_announced_files |
 | an 11th outward action within the bucket | tests/unit/test_core.py::test_the_bucket_refuses_the_eleventh_action |
 | edit or delete of someone else's message | tests/unit/test_messages.py::test_only_own_messages_change |
@@ -180,6 +188,7 @@ partial result: the tool reports who failed and why.
 | a host that does not serve a VK Teams config | tests/unit/test_install.py::test_a_host_without_vk_config_is_refused |
 | a host outside the operator's pinned list | tests/unit/test_install.py::test_pinned_installations_only |
 | a 4th code request for one address within an hour | tests/unit/test_signin.py::test_code_requests_are_limited |
-| an access token for another person's session | tests/unit/test_oauth.py::test_a_token_reaches_only_its_own_session |
-| an expired or revoked access token | tests/unit/test_oauth.py::test_expired_and_revoked_tokens_are_refused |
+| an altered access token, or a token of another kind | tests/unit/test_oauth.py::test_an_altered_token_is_refused |
+| an expired access token | tests/unit/test_oauth.py::test_tokens_expire |
+| a code or refresh token of another client | tests/unit/test_oauth.py::test_a_code_belongs_to_its_client |
 | a code exchange with a wrong PKCE verifier | tests/unit/test_http.py::test_a_wrong_pkce_verifier_is_refused |

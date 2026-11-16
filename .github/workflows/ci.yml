@@ -70,6 +70,36 @@ jobs:
           got="$(docker exec mcp id -u)"
           echo "image user: ${want:-<none>}, running as uid: $got"
           test -n "$want" && test "$got" = "$want" && test "$got" != 0
+      - name: Two replicas share nothing but the secret
+        run: |
+          set -euo pipefail
+          secret="$(openssl rand -base64 48)"
+          for n in 1 2; do
+            docker run -d --name "r$n" -p "127.0.0.1:800$n:8000" \
+              -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -e VKTEAMS_MCP_SECRET="$secret" vkteams-mcp:ci
+          done
+          for n in 1 2; do
+            up=""
+            for _ in $(seq 1 30); do
+              if curl -fsS -m 2 "http://127.0.0.1:800$n/healthz" >/dev/null 2>&1; then up=1; break; fi
+              sleep 1
+            done
+            test -n "$up" || { echo "replica $n never answered /healthz"; docker logs "r$n"; exit 1; }
+          done
+          # register on replica one: the registration comes back as the client id
+          cid="$(curl -fsS -H 'Host: mcp.example.org' -H 'Content-Type: application/json' \
+            -d '{"redirect_uris":["https://client.example.org/cb"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]}' \
+            http://127.0.0.1:8001/register | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')"
+          # replica two knows the client without ever having seen it: authorize sends the browser to sign in
+          code="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'Host: mcp.example.org' \
+            "http://127.0.0.1:8002/authorize?response_type=code&client_id=$cid&redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb&state=s&code_challenge=$(printf 'x%.0s' {1..43})&code_challenge_method=S256")"
+          echo "replica two: $code"
+          case "$code" in 302\ https://mcp.example.org/signin?request=*) ;; *) exit 1 ;; esac
+          # and a client id it did not issue is refused
+          bad="$(curl -s -m 5 -w ' %{http_code}' -H 'Host: mcp.example.org' \
+            "http://127.0.0.1:8002/authorize?response_type=code&client_id=made-up&redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb&state=s&code_challenge=$(printf 'x%.0s' {1..43})&code_challenge_method=S256")"
+          echo "made-up client: $bad"
+          case "$bad" in *invalid_request*400) ;; *) exit 1 ;; esac
       - name: Server log
         if: always()
         run: docker logs mcp 2>&1 | tail -50 || true

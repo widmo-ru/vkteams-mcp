@@ -224,30 +224,24 @@ SECRET = "x" * 40
 
 @pytest.fixture
 def make_server(fake, session, tmp_path):
-    """Build the MCP server on the fake VK, with a signed-in person; returns (server, runtime)."""
+    """Build the MCP server on the fake VK, acting as the signed-in person; returns (server, runtime)."""
     from vkteams_mcp.config import Settings
     from vkteams_mcp.core import context
     from vkteams_mcp.core.guard import Guard
     from vkteams_mcp.links.links import Links
-    from vkteams_mcp.oauth.store import Store
     from vkteams_mcp.registry import parse_areas
     from vkteams_mcp.server import VKServer
 
     def build(areas: str | None = None):
-        settings = Settings(
-            public_url="https://mcp.example.org", secret=SECRET, database=str(tmp_path / "db"), areas=parse_areas(areas)
-        )
-        store = Store(tmp_path / "db.sqlite", SECRET)
+        settings = Settings(public_url="https://mcp.example.org", secret=SECRET, areas=parse_areas(areas))
         rt = context.Runtime(
             settings=settings,
-            store=store,
             http=httpx.AsyncClient(transport=fake.transport()),
             guard=Guard(clock=lambda: 0.0),
         )
-        rt.links = Links("https://mcp.example.org")
+        rt.links = Links("https://mcp.example.org", rt.sealer)
         context.install(rt)
-        person = store.save_session(session)
-        context.person_override.set(person)
+        context.session_override.set(session)
         return VKServer(settings.areas), rt
 
     return build
@@ -340,3 +334,10 @@ def history_like_vk(messages: list[dict], **extra):
         return ok({"messages": page, "lastMsgId": ids[-1] if ids else 0, "olderMsgId": older, **extra})
 
     return answer
+
+
+async def saved(server, args: dict | None = None, **kw) -> str:
+    """save_draft, returning the sealed draft send_draft takes."""
+    r = await call_tool(server, "save_draft", {**(args or {}), **kw})
+    assert not r.is_error, r.content
+    return r.structured_content["draft"]

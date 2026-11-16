@@ -23,6 +23,7 @@ from vkteams_mcp.core.context import call
 from vkteams_mcp.core.errors import VKError, invalid
 from vkteams_mcp.core.guard import MAX_PEOPLE
 from vkteams_mcp.core.project import cap_text, clamp_limit, compact, page_result
+from vkteams_mcp.core.seal import TooLarge
 from vkteams_mcp.registry import tool
 from vkteams_mcp.tools._common import (
     MSG_ID_PATTERN,
@@ -43,6 +44,7 @@ DRAFT_TTL = 24 * 3600
 _INLINE_ADDRESS = re.compile(r"(?<![\w\[])@([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 MAX_TEXT = 10_000
 MAX_POLL_OPTIONS = 10
+MAX_POLL_OPTION = 300
 # live: a year ahead is accepted, decades are refused at send ("too far in the future"), after the person agreed
 MAX_SCHEDULE_DAYS = 366
 _NATIVE_MENTION = re.compile(r"@\[([^\[\]\s]+)\]")
@@ -256,14 +258,13 @@ async def save_draft(
     ] = None,
 ) -> dict[str, Any]:
     """Prepares a message for a chat and shows it back, without sending: the first of two steps. Call it whenever
-    the person wants to write to someone; show them the preview, and call send_draft only when they agree. It keeps
-    one draft per chat on this server for 24 hours (a new one replaces the old) and never touches the draft in the
-    person's own VK Teams app. It refuses empty text, an unknown chat or person, a poll with fewer than 2 or more
-    than 10 answers, and a send time in the past."""
+    the person wants to write to someone; show them the preview, and call send_draft with the draft value it returns
+    only when they agree. The draft lives 24 hours and is sealed: it cannot be changed, only saved again. It never
+    touches the draft in the person's own VK Teams app. It refuses empty text, an unknown chat or person, a poll with
+    fewer than 2 or more than 10 answers, and a send time in the past."""
     async with call("save_draft") as c:
         sn = await resolve_chat(c, chat)
-        async with _lock(c.rt, c.person, sn):  # not while a send of this chat's draft is in flight
-            return await _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, attach)
+        return await _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, attach)
 
 
 async def _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, attach) -> dict[str, Any]:
@@ -304,6 +305,8 @@ async def _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, att
         raise invalid(f"A poll has 2 to {MAX_POLL_OPTIONS} answers. Nothing was saved.")
     if poll_options is not None:
         poll_options = [o.strip() for o in poll_options]
+        if any(len(o) > MAX_POLL_OPTION for o in poll_options):
+            raise invalid(f"A poll answer is at most {MAX_POLL_OPTION} characters. Nothing was saved.")
         if not all(_visible(o) for o in poll_options):
             raise invalid("A poll answer is empty. Nothing was saved.")
         if len({o.casefold() for o in poll_options}) != len(poll_options):
@@ -323,25 +326,28 @@ async def _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, att
                     "attach takes file names in the current folder, not paths: copy the file there first, then "
                     "attach its name. Nothing was saved."
                 )
-        uploads = c.rt.links.announce_uploads(c.person, sn, attach)
-    draft = {
-        "version": uuid.uuid4().hex,
+        uploads = c.rt.links.announce_uploads(c.vk.s, sn, attach)
+    body_out = {
+        "p": c.person,
+        "chat": sn,
         "text": body,
         "quote": quote,
         "poll": poll_options,
         "send_at": when,
         "files": [u["id"] for u in uploads],
-        # one stable localMsgId per part, and which parts are already sent: a retry after a partial send
-        # resumes instead of posting a file twice
+        # one stable localMsgId per part: VK Teams answers a resend with the same id with the same message
+        # (live), so sending this draft again, whole or after a partial failure, posts nothing twice
         "local_ids": {"main": str(uuid.uuid4()), **{u["id"]: str(uuid.uuid4()) for u in uploads}},
-        "sent": [],
     }
-    c.rt.store.save_draft(c.person, sn, draft, time.time() + DRAFT_TTL)
+    try:
+        draft = c.rt.sealer.seal("draft", body_out, DRAFT_TTL)
+    except TooLarge:
+        raise VKError("too_large", size="this draft", limit="what one draft can carry; shorten it") from None
     preview = cap_text(body)
     return compact(
         {
             "chat": sn,
-            "draft": content_block("your draft", preview["text"]),
+            "text": content_block("your draft", preview["text"]),
             "truncated": preview.get("truncated"),
             "mentions": mentioned or None,
             "reply_to": reply_to,
@@ -350,7 +356,10 @@ async def _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, att
             "send_at": local(when, c.tz) if when else None,
             "upload": [{"file": u["name"], "command": u["command"], "expires_in": u["expires_in"]} for u in uploads]
             or None,
-            "next": "Show the draft to the person; after they agree, call send_draft with user_confirmed=true.",
+            "draft": draft,
+            "next": "Show the draft to the person; after they agree, call send_draft with this draft value"
+            + (", the file value each upload command printed," if uploads else "")
+            + " and user_confirmed=true.",
         }
     )
 
@@ -358,63 +367,78 @@ async def _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, att
 @tool(area="messages", title="Send the draft", notifies_others=True)
 async def send_draft(
     chat: ChatArg,
+    draft: Annotated[str, Field(description="The draft value save_draft returned.")],
     user_confirmed: Annotated[
         bool, Field(description="true only when the person explicitly said to send this draft.")
     ] = False,
+    files: Annotated[
+        list[str] | None,
+        Field(description="For a draft with attachments: the file value each upload command printed."),
+    ] = None,
 ) -> dict[str, Any]:
-    """Sends the draft saved with save_draft for this chat, exactly as saved, or schedules it if it has a send time.
-    Call it only after the person has seen the draft and said to send it. Everyone in the chat sees the message at
-    once, so it needs user_confirmed; it refuses when no draft was saved for the chat, when an announced file has
-    not been uploaded yet, and when the person's allowance of actions is used up."""
+    """Sends a draft made by save_draft, exactly as saved, or schedules it if it has a send time. Call it only after
+    the person has seen the draft and said to send it. Everyone in the chat sees the message at once, so it needs
+    user_confirmed. Sending the same draft again posts nothing twice. It refuses a draft that is not one save_draft
+    made for this person and chat, a draft whose files have not all been uploaded, and a send when the person's
+    allowance of actions is used up."""
     async with call("send_draft") as c:
         sn = await resolve_chat(c, chat)
-        # One send per person and chat at a time: two overlapping calls must not both send the same draft.
+        saved = c.rt.sealer.open("draft", draft)
+        if saved is None or saved.get("p") != c.person or saved.get("chat") != sn:
+            raise VKError("no_draft")
+        wanted = list(saved.get("files") or [])
+        got = c.rt.links.files(files or [])
+        if got is None or sorted(f["uid"] for f in got) != sorted(wanted) or any(f["chat"] != sn for f in got):
+            raise invalid(
+                "Every attached file must be uploaded first: run each upload command from save_draft and pass the "
+                "file values it printed in files. Nothing was sent."
+            )
+        # One send per person and chat at a time on this replica; across replicas VK Teams posts a resend once.
         async with _lock(c.rt, c.person, sn):
-            draft = c.rt.store.draft(c.person, sn, time.time())
-            if draft is None:
-                raise VKError("no_draft")
-            files = c.rt.links.uploaded(c.person, draft.get("files") or [])
-            if files is None:
-                raise invalid(
-                    "An attached file has not been uploaded yet: run the upload command from save_draft, then "
-                    "call send_draft again. Nothing was sent."
-                )
             receipt = c.guard(kind="message", user_confirmed=user_confirmed, target=sn)
-            ids, done = draft.get("local_ids") or {}, list(draft.get("sent") or [])
-            when = draft.get("send_at")
-            result: dict[str, Any] = {}
-            sent_files = 0
+            ids, when = saved.get("local_ids") or {}, saved.get("send_at")
+            by_uid = {f["uid"]: f for f in got}
             file_receipts = []
-            for fid, f in zip(draft.get("files") or [], files, strict=True):
+            for uid in wanted:
                 # a file is posted as its link, as the VK Teams apps do, at the draft's time like its text
-                if fid not in done:
-                    file_receipts.append(
-                        await _send(c, sn, {"mainPart": {"text": {"plain": f["url"]}}}, when, ids.get(fid))
-                    )
-                    done.append(fid)
-                    c.rt.store.save_draft(c.person, sn, {**draft, "sent": done}, time.time() + DRAFT_TTL)
-                sent_files += 1
+                link_text = by_uid[uid]["url"]
+                file_receipts.append(
+                    await _send(c, sn, {"mainPart": {"text": {"plain": link_text}}}, when, ids.get(uid))
+                )
             main: dict[str, Any] = {}
-            if draft.get("poll"):
-                main = {"text": {"plain": draft["text"]}, "poll": {"type": "anon", "responses": draft["poll"]}}
-            elif draft.get("text"):
-                main = {"text": {"plain": draft["text"]}}
-            if main and "main" not in done:
+            if saved.get("poll"):
+                main = {"text": {"plain": saved["text"]}, "poll": {"type": "anon", "responses": saved["poll"]}}
+            elif saved.get("text"):
+                main = {"text": {"plain": saved["text"]}}
+            result: dict[str, Any] = {}
+            if main:
                 parts: dict[str, Any] = {"mainPart": main}
-                if draft.get("quote"):
-                    parts["quoteParts"] = [draft["quote"]]
+                if saved.get("quote"):
+                    parts["quoteParts"] = [saved["quote"]]
                 result = await _send(c, sn, parts, when, ids.get("main"))
-            c.rt.store.delete_draft(c.person, sn, version=draft.get("version"))
         forget_index(c)
         return compact(
             {
                 "chat": sn,
                 **result,
-                "files_sent": sent_files or None,
+                "files_sent": len(file_receipts) or None,
                 "files": [compact(r) for r in file_receipts] or None,
                 **receipt,
             }
         )
+
+
+async def _already_scheduled(c, sn: str, parts: dict, when: int) -> str | None:
+    r = await c.vk.rapi("message/scheduled/history/get", {"sn": sn, "historyVersion": "0"})
+    rows = (r.get("messages") or {}).get("new", []) if isinstance(r.get("messages"), dict) else []
+    text = ((parts.get("mainPart") or {}).get("text") or {}).get("plain", "")
+    for row in rows:
+        if not isinstance(row, dict) or row.get("scheduledTime") != when:
+            continue
+        queued = "\n".join(str(x.get("text", "")) for x in row.get("parts") or [] if isinstance(x, dict))
+        if queued == text:
+            return id_text(row.get("scheduledMsgId"))
+    return None
 
 
 def _lock(rt, person: str, chat: str):
@@ -425,6 +449,13 @@ def _lock(rt, person: str, chat: str):
 async def _send(c, sn: str, parts: dict, when: int | None, local_id: str | None = None) -> dict[str, Any]:
     p: dict[str, Any] = {"target": sn, "localMsgId": local_id or str(uuid.uuid4()), "parts": parts}
     if when:
+        # live: a scheduled resend with the same localMsgId is queued twice, and the queue does not show the id,
+        # so the same text at the same time already in the queue is this draft sent before. Only for a plain
+        # text part: a poll or a quote is not in what the queue shows, and two of them can share their text.
+        plain = set(parts) == {"mainPart"} and set(parts["mainPart"]) == {"text"}
+        queued = await _already_scheduled(c, sn, parts, when) if plain else None
+        if queued is not None:
+            return {"scheduled_id": queued, "scheduled_for": local(when, c.tz), "already_scheduled": True}
         p["schedule"] = {"scheduledTime": when}
     r = await c.vk.rapi("message/send", p, write=True)
     sched = r.get("scheduled")

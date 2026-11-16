@@ -19,12 +19,12 @@ def app(fake, tmp_path, session):  # noqa: F811
     from vkteams_mcp.core import context
 
     app, server, _ = build(
-        Settings(public_url=PUBLIC, secret=SECRET, database=str(tmp_path / "db.sqlite")),
+        Settings(public_url=PUBLIC, secret=SECRET),
         http=httpx.AsyncClient(transport=fake.transport()),
     )
     rt = context.runtime()
-    person = rt.store.save_session(session)
-    context.person_override.set(person)
+    context.session_override.set(session)
+    person = session
     return app, server, rt, person
 
 
@@ -77,9 +77,13 @@ async def test_an_upload_lands_in_vk_teams_and_send_draft_posts_it(app, fake):
     assert put.status_code == 200, put.text
     upload = [s for s in fake.seen if s.path == "/up/1"][0]
     assert upload.content == b"hello file" and upload.headers["content-range"] == "bytes 0-9/10"
-    again = await get(a, urlpath(url), method="PUT", content=b"twice")
-    assert again.status_code == 403  # an upload link works once
-    await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    # the response was lost on the way back: uploading again within the link's life recovers the file
+    again = await get(a, urlpath(url), method="PUT", content=b"hello file")
+    assert again.status_code == 200, again.text
+    file = again.json()["file"]
+    d = r.structured_content["draft"]
+    sent = await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "files": [file], "user_confirmed": True})
+    assert not sent.is_error, sent.content
     texts = [s.params["parts"]["mainPart"]["text"]["plain"] for s in fake.calls("message/send")]
     assert texts == ["https://f.example.com/get/F1", "see attached"]
 
@@ -97,10 +101,11 @@ def urlpath(url: str) -> str:
 
 
 def test_a_download_name_cannot_become_a_path():
+    from vkteams_mcp.core.seal import Sealer
     from vkteams_mcp.links.links import Links
 
     for evil in ("../../.bashrc", "/etc/passwd", "..\\..\\x", "a'; rm -rf ~; '", "-rf", ".."):
-        cmd = Links("https://mcp.example.org").download("p", "https://x/y", evil)["command"]
+        cmd = Links("https://mcp.example.org", Sealer("x" * 40)).download(_session(), "https://x/y", evil)["command"]
         target = cmd.split("-o '")[1].split("'")[0]
         assert "/" not in target and "\\" not in target and not target.startswith("-") and target not in ("", "..")
 
@@ -133,7 +138,16 @@ async def test_a_cyrillic_file_name_uploads(app, fake):
 
 
 def test_an_upload_command_quotes_the_local_name_as_it_is():
+    from vkteams_mcp.core.seal import Sealer
     from vkteams_mcp.links.links import Links
 
-    cmd = Links("https://mcp.example.org").announce_uploads("p", "c", ["my report's v2.pdf"])[0]["command"]
+    cmd = Links("https://mcp.example.org", Sealer("x" * 40)).announce_uploads(_session(), "c", ["my report's v2.pdf"])[
+        0
+    ]["command"]
     assert cmd.startswith("curl -fsS --globoff -T 'my report'\"'\"'s v2.pdf' ")
+
+
+def _session():
+    from vkteams_mcp.api.session import VKSession
+
+    return VKSession("teams.example.com", "files.example.com", 139, "d", "me@example.com", "a", "k", 0, "s", "u", "me")

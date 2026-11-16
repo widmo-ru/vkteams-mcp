@@ -128,6 +128,15 @@ class VK:
         raise VKError("failed", detail=_reason(resp.get("statusText")))
 
     # ---------------------------------------------------------------- session
+    async def end(self) -> None:
+        """Disconnect: end the session and invalidate its long-term token, so nothing carrying it works again."""
+        try:
+            await self.wim("aim/endSession", {"invalidateToken": 1}, write=True)
+        except VKError as e:
+            if e.key != "reconnect":  # only a refused token means it is gone; anything else, it may still work
+                raise
+            log.info("endSession: the session was already gone")
+
     async def renew(self) -> None:
         """startSession from the long-term token: a new aimsid without asking the person."""
         url = f"{self.s.base}/wim/aim/startSession"
@@ -149,9 +158,11 @@ class VK:
         params["sig_sha256"] = sign("POST", url, params, self.s.session_key)
         r = await self._send("POST", url, True, data=params)
         resp = self._json(r, True).get("response") or {}
-        if resp.get("statusCode") != 200:
-            log.info("startSession -> %s", resp.get("statusCode"))
-            raise VKError("reconnect")
+        code = resp.get("statusCode")
+        if code != 200:
+            log.info("startSession -> %s", code)
+            # VK Teams down is not the token refused: only a refusal means the person must sign in again
+            raise VKError("failed_read" if isinstance(code, int) and code >= 500 else "reconnect")
         d = resp.get("data") or {}
         self.s.aimsid = d["aimsid"]
         self.s.fetch_base_url = d.get("fetchBaseURL", self.s.fetch_base_url)

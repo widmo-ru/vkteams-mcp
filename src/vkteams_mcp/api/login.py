@@ -5,7 +5,7 @@ Shapes from the desktop client (im-desktop `client_login.cpp`) and a live run:
   2. clientLogin s=<address> pwd=<CODE> → token.a, sessionSecret, hostTime.
      Sending the code with tokenType=otp_via_email again would send a NEW code and burn this one.
   3. startSession signed with HMAC(code, sessionSecret) → aimsid.
-The code is used once here and never stored; only the long-term token and session key are.
+The code is used once here and never stored; the long-term token and session key travel sealed in the tokens.
 """
 
 from __future__ import annotations

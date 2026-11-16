@@ -1,9 +1,7 @@
-"""The OAuth 2.1 server in front of VK Teams sessions: what is stored, how tokens live and die,
-and that a token only ever reaches its own person's session."""
+"""The OAuth 2.1 server in front of VK Teams sessions. It stores nothing: every artefact is a sealed blob
+that carries what the next step needs, and a token only ever reaches the session it carries."""
 
 from __future__ import annotations
-
-import sqlite3
 
 import pytest
 from conftest import ME
@@ -11,29 +9,43 @@ from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
-from vkteams_mcp.oauth.provider import ACCESS_TTL, CODE_TTL, Provider
-from vkteams_mcp.oauth.store import Store
+from vkteams_mcp.core.seal import Sealer
+from vkteams_mcp.oauth.provider import ACCESS_TTL, CODE_TTL, REFRESH_TTL, Provider
 
 SECRET = "s" * 40
+NOW = 1_000_000.0
 
 
 @pytest.fixture
-def store(tmp_path):
-    return Store(tmp_path / "db.sqlite", SECRET)
+def clock():
+    return {"now": NOW}
 
 
 @pytest.fixture
-def provider(store):
-    return Provider(store, public_url="https://mcp.example.org", clock=lambda: 1_000_000.0)
+def ended():
+    return []
 
 
-CLIENT = OAuthClientInformationFull(
-    client_id="c1",
-    redirect_uris=[AnyUrl("https://client.example.org/cb")],
-    token_endpoint_auth_method="none",
-    grant_types=["authorization_code", "refresh_token"],
-    response_types=["code"],
-)
+@pytest.fixture
+def provider(clock, ended):
+    async def end_session(s):
+        ended.append(s.token_a)
+
+    now = lambda: clock["now"]  # noqa: E731
+    return Provider(
+        Sealer(SECRET, now), SECRET, public_url="https://mcp.example.org", end_session=end_session, clock=now
+    )
+
+
+def a_client(redirect="https://client.example.org/cb") -> OAuthClientInformationFull:
+    return OAuthClientInformationFull(
+        client_id="assigned-by-the-sdk",
+        redirect_uris=[AnyUrl(redirect)],
+        token_endpoint_auth_method="none",
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        client_name="test client",
+    )
 
 
 def params(**kw) -> AuthorizationParams:
@@ -49,180 +61,150 @@ def params(**kw) -> AuthorizationParams:
     return AuthorizationParams(**base)
 
 
-async def signed_in(provider, session, client=CLIENT):
+async def registered(provider, client=None):
+    client = client or a_client()
     await provider.register_client(client)
+    return await provider.get_client(client.client_id)
+
+
+async def code_for(provider, session, client):
     url = await provider.authorize(client, params())
     assert url.startswith("https://mcp.example.org/signin?request=")
-    request_id = url.split("request=")[1]
-    redirect = await provider.complete_sign_in(request_id, session)
+    redirect = await provider.complete_sign_in(url.split("request=")[1], session)
     assert redirect.startswith("https://client.example.org/cb?") and "state=st" in redirect
-    code = redirect.split("code=")[1].split("&")[0]
+    return redirect.split("code=")[1].split("&")[0]
+
+
+async def tokens(provider, session, client):
+    code = await code_for(provider, session, client)
     ac = await provider.load_authorization_code(client, code)
+    assert ac is not None
     return await provider.exchange_authorization_code(client, ac)
 
 
-# ---------------------------------------------------------------- storage
+# ---------------------------------------------------------------- nothing kept, nothing readable
 
 
-def test_vk_credentials_are_sealed_at_rest(store, session, tmp_path):
-    pid = store.save_session(session)
-    raw = sqlite3.connect(tmp_path / "db.sqlite").execute("select sealed from persons").fetchone()[0]
-    for secret in (session.token_a, session.session_key, session.aimsid, ME):
-        assert secret.encode() not in raw
-    assert store.load_session(pid).token_a == session.token_a
+async def test_a_registration_is_its_own_client_id(provider):
+    client = await registered(provider)
+    assert client is not None and client.client_name == "test client"
+    assert client.client_id != "assigned-by-the-sdk" and "client.example.org" not in client.client_id
+    other = Provider(Sealer("t" * 40), "t" * 40, public_url="https://mcp.example.org")
+    assert await other.get_client(client.client_id) is None  # another secret opens nothing
 
 
-def test_a_sealed_session_cannot_be_moved_to_another_person(store, session, tmp_path):
-    pid = store.save_session(session)
-    db = sqlite3.connect(tmp_path / "db.sqlite")
-    db.execute(
-        "insert into persons(person_id, host, sealed, updated) values('other','h',"
-        "(select sealed from persons where person_id=?),0)",
-        (pid,),
-    )
-    db.commit()
-    assert store.load_session("other") is None
+async def test_tokens_carry_the_session_unreadably(provider, session):
+    client = await registered(provider)
+    t = await tokens(provider, session, client)
+    for value in (t.access_token, t.refresh_token):
+        assert "token-a" not in value and "session-key" not in value and ME not in value
+    assert provider.session_of(t.access_token).token_a == "token-a"
 
 
-def test_another_secret_cannot_open_the_store(store, session, tmp_path):
-    pid = store.save_session(session)
-    assert Store(tmp_path / "db.sqlite", "t" * 40).load_session(pid) is None
+async def test_any_replica_with_the_secret_serves_the_token(provider, session, clock):
+    client = await registered(provider)
+    t = await tokens(provider, session, client)
+    replica = Provider(Sealer(SECRET, lambda: clock["now"]), SECRET, public_url="https://mcp.example.org")
+    access = await replica.load_access_token(t.access_token)
+    assert access is not None and replica.session_of(t.access_token).login == ME
 
 
-def test_a_short_secret_is_refused(tmp_path):
+async def test_a_blob_of_one_kind_is_not_another(provider, session):
+    client = await registered(provider)
+    t = await tokens(provider, session, client)
+    assert await provider.load_access_token(t.refresh_token) is None
+    assert await provider.load_refresh_token(client, t.access_token) is None
+    assert await provider.load_authorization_code(client, t.access_token) is None
+    assert await provider.get_client(t.access_token) is None
+
+
+async def test_an_altered_token_is_refused(provider, session):
+    client = await registered(provider)
+    t = await tokens(provider, session, client)
+    flipped = t.access_token[:-2] + ("A" if t.access_token[-2] != "A" else "B") + t.access_token[-1]
+    assert await provider.load_access_token(flipped) is None
+
+
+def test_a_short_secret_is_refused():
     with pytest.raises(ValueError):
-        Store(tmp_path / "db.sqlite", "short")
+        Sealer("short")
 
 
-# ---------------------------------------------------------------- flow
+# ---------------------------------------------------------------- the flow
 
 
-async def test_tokens_are_stored_only_as_hashes(provider, session, tmp_path):
-    tok = await signed_in(provider, session)
-    dump = "\n".join(sqlite3.connect(tmp_path / "db.sqlite").iterdump())
-    assert tok.access_token not in dump and tok.refresh_token not in dump
-
-
-async def test_an_access_token_names_its_person(provider, session, store):
-    tok = await signed_in(provider, session)
-    at = await provider.load_access_token(tok.access_token)
-    assert at.subject == store.person_id(session) and at.client_id == "c1"
-    assert at.resource == "https://mcp.example.org/mcp"
-    assert tok.expires_in == ACCESS_TTL
-
-
-async def test_a_token_reaches_only_its_own_session(provider, store, session):
-    tok_a = await signed_in(provider, session)
-    other = type(session)(
-        **{**session.__dict__, "login": "other@example.com", "my_sn": "other@example.com", "aimsid": "aimsid-other"}
-    )
-    tok_b = await signed_in(provider, other)
-    a = await provider.load_access_token(tok_a.access_token)
-    b = await provider.load_access_token(tok_b.access_token)
-    assert a.subject != b.subject
-    assert store.load_session(a.subject).aimsid == "aimsid-1"
-    assert store.load_session(b.subject).aimsid == "aimsid-other"
+async def test_an_access_token_names_its_person_by_an_opaque_id(provider, session):
+    client = await registered(provider)
+    t = await tokens(provider, session, client)
+    access = await provider.load_access_token(t.access_token)
+    assert access.subject == provider.person(session) and ME not in access.subject
+    assert access.client_id == client.client_id  # revocation compares it with the client
 
 
 async def test_a_code_is_used_once(provider, session):
-    await provider.register_client(CLIENT)
-    url = await provider.authorize(CLIENT, params())
-    redirect = await provider.complete_sign_in(url.split("request=")[1], session)
-    code = redirect.split("code=")[1].split("&")[0]
-    ac = await provider.load_authorization_code(CLIENT, code)
-    await provider.exchange_authorization_code(CLIENT, ac)
-    assert await provider.load_authorization_code(CLIENT, code) is None
+    client = await registered(provider)
+    code = await code_for(provider, session, client)
+    ac = await provider.load_authorization_code(client, code)
+    await provider.exchange_authorization_code(client, ac)
+    assert await provider.load_authorization_code(client, code) is None
 
 
 async def test_a_code_belongs_to_its_client(provider, session):
-    await provider.register_client(CLIENT)
-    other = CLIENT.model_copy(update={"client_id": "c2"})
-    await provider.register_client(other)
-    url = await provider.authorize(CLIENT, params())
-    code = (await provider.complete_sign_in(url.split("request=")[1], session)).split("code=")[1].split("&")[0]
+    client = await registered(provider)
+    other = await registered(provider, a_client("https://other.example.org/cb"))
+    code = await code_for(provider, session, client)
     assert await provider.load_authorization_code(other, code) is None
 
 
-async def test_a_sign_in_request_is_used_once_and_expires(provider, session, store):
-    await provider.register_client(CLIENT)
-    url = await provider.authorize(CLIENT, params())
-    rid = url.split("request=")[1]
-    await provider.complete_sign_in(rid, session)
+async def test_a_code_and_a_sign_in_request_expire(provider, session, clock):
+    client = await registered(provider)
+    url = await provider.authorize(client, params())
+    request = url.split("request=")[1]
+    code = await code_for(provider, session, client)
+    clock["now"] += CODE_TTL + 1
+    assert await provider.load_authorization_code(client, code) is None
+    clock["now"] += 15 * 60
+    assert await provider.sign_in_context(request) is None
     with pytest.raises(LookupError):
-        await provider.complete_sign_in(rid, session)
-    url2 = await provider.authorize(CLIENT, params())
-    late = Provider(store, public_url="https://mcp.example.org", clock=lambda: 1_000_000.0 + 3600)
-    with pytest.raises(LookupError):
-        await late.complete_sign_in(url2.split("request=")[1], session)
+        await provider.complete_sign_in(request, session)
 
 
-async def test_expired_and_revoked_tokens_are_refused(provider, store, session):
-    tok = await signed_in(provider, session)
-    later = Provider(store, public_url="https://mcp.example.org", clock=lambda: 1_000_000.0 + ACCESS_TTL + 1)
-    assert await later.load_access_token(tok.access_token) is None
-    at = await provider.load_access_token(tok.access_token)
-    await provider.revoke_token(at)
-    assert await provider.load_access_token(tok.access_token) is None
+async def test_tokens_expire(provider, session, clock):
+    client = await registered(provider)
+    t = await tokens(provider, session, client)
+    clock["now"] += ACCESS_TTL + 1
+    assert await provider.load_access_token(t.access_token) is None
+    assert await provider.load_refresh_token(client, t.refresh_token) is not None
+    clock["now"] += REFRESH_TTL
+    assert await provider.load_refresh_token(client, t.refresh_token) is None
 
 
-async def test_refresh_rotates_and_the_old_refresh_token_dies(provider, session):
-    tok = await signed_in(provider, session)
-    rt = await provider.load_refresh_token(CLIENT, tok.refresh_token)
-    new = await provider.exchange_refresh_token(CLIENT, rt, [])
-    assert new.access_token != tok.access_token and new.refresh_token != tok.refresh_token
-    assert (await provider.load_access_token(new.access_token)).subject
-    assert await provider.load_access_token(tok.access_token) is None  # the old access token goes too
-    assert await provider.load_refresh_token(CLIENT, tok.refresh_token) is None  # and reusing the old refresh
-    assert await provider.load_access_token(new.access_token) is None  # ...revokes the chain
+async def test_a_refresh_gives_new_tokens_with_the_freshest_session(provider, session):
+    from dataclasses import replace
+
+    client = await registered(provider)
+    t = await tokens(provider, session, client)
+    renewed = replace(session, aimsid="aimsid-renewed")
+    provider._latest = lambda person, s: renewed if person == provider.person(s) else s
+    rt = await provider.load_refresh_token(client, t.refresh_token)
+    new = await provider.exchange_refresh_token(client, rt, [])
+    assert new.access_token != t.access_token and new.refresh_token != t.refresh_token
+    assert provider.session_of(new.access_token).aimsid == "aimsid-renewed"
 
 
 async def test_a_refresh_token_belongs_to_its_client(provider, session):
-    tok = await signed_in(provider, session)
-    other = CLIENT.model_copy(update={"client_id": "c2"})
-    assert await provider.load_refresh_token(other, tok.refresh_token) is None
+    client = await registered(provider)
+    other = await registered(provider, a_client("https://other.example.org/cb"))
+    t = await tokens(provider, session, client)
+    assert await provider.load_refresh_token(other, t.refresh_token) is None
 
 
-async def test_signing_out_revokes_every_token_of_the_person(provider, session, store):
-    tok = await signed_in(provider, session)
-    at = await provider.load_access_token(tok.access_token)
-    store.forget_person(at.subject)
-    assert await provider.load_access_token(tok.access_token) is None
-    assert store.load_session(at.subject) is None
+async def test_revoking_a_token_ends_the_vk_teams_session(provider, session, ended):
+    client = await registered(provider)
+    t = await tokens(provider, session, client)
+    await provider.revoke_token(await provider.load_access_token(t.access_token))
+    assert ended == ["token-a"]  # every token carrying this session now meets a dead session
 
 
 def test_the_code_lifetime_is_short():
     assert CODE_TTL <= 600 and ACCESS_TTL <= 3600
-
-
-async def test_a_reused_refresh_token_revokes_the_whole_chain(provider, session):
-    tok = await signed_in(provider, session)
-    rt = await provider.load_refresh_token(CLIENT, tok.refresh_token)
-    thief = await provider.exchange_refresh_token(CLIENT, rt, [])  # the thief refreshes first
-    assert await provider.load_refresh_token(CLIENT, tok.refresh_token) is None  # the owner tries the old one
-    assert await provider.load_access_token(thief.access_token) is None
-    assert await provider.load_refresh_token(CLIENT, thief.refresh_token) is None
-
-
-def test_drafts_are_sealed_at_rest(store, tmp_path):
-    store.save_draft("p1", "1001@chat.agent", {"text": "secret plans"}, expires=10**10)
-    rows = sqlite3.connect(tmp_path / "db.sqlite").execute("select chat, data from drafts").fetchall()
-    raw = b"".join(bytes(c, "utf-8") + bytes(d) for c, d in rows)
-    assert b"secret plans" not in raw and b"1001@chat.agent" not in raw
-    assert store.draft("p1", "1001@chat.agent", 0)["text"] == "secret plans"
-    assert store.draft("p2", "1001@chat.agent", 0) is None
-
-
-async def test_a_replay_after_several_rotations_still_revokes_the_chain(provider, session):
-    t0 = await signed_in(provider, session)
-    t1 = await provider.exchange_refresh_token(CLIENT, await provider.load_refresh_token(CLIENT, t0.refresh_token), [])
-    t2 = await provider.exchange_refresh_token(CLIENT, await provider.load_refresh_token(CLIENT, t1.refresh_token), [])
-    assert await provider.load_refresh_token(CLIENT, t0.refresh_token) is None  # R0 replayed after R1 -> R2
-    assert await provider.load_access_token(t2.access_token) is None
-
-
-async def test_a_replay_from_another_client_does_not_revoke_the_owners_chain(provider, session):
-    t0 = await signed_in(provider, session)
-    t1 = await provider.exchange_refresh_token(CLIENT, await provider.load_refresh_token(CLIENT, t0.refresh_token), [])
-    other = CLIENT.model_copy(update={"client_id": "c2"})
-    assert await provider.load_refresh_token(other, t0.refresh_token) is None
-    assert await provider.load_access_token(t1.access_token) is not None

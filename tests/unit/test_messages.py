@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import GROUP, ME, call_tool, history_like_vk, ok, text_of
+from conftest import GROUP, GROUP2, ME, call_tool, history_like_vk, ok, saved, text_of
 
 MESSAGES = [
     {"msgId": 10, "time": 1_799_999_000, "text": "older", "chat": {"sender": "ann@example.com"}},
@@ -73,40 +73,47 @@ async def test_one_message_needs_its_chat(server, chats):
 
 async def test_save_draft_writes_nothing_to_vk_teams(server, chats):
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "hello"})
-    assert not r.is_error and "hello" in r.structured_content["draft"]
+    assert not r.is_error and "hello" in r.structured_content["text"] and r.structured_content["draft"]
     assert chats.writes() == []  # not even draft/set: the person's own draft is never touched
 
 
 async def test_send_draft_needs_confirmation(server, chats):
-    await call_tool(server, "save_draft", {"chat": GROUP, "text": "hello"})
-    r = await call_tool(server, "send_draft", {"chat": GROUP})
+    d = await saved(server, chat=GROUP, text="hello")
+    r = await call_tool(server, "send_draft", {"chat": GROUP, "draft": d})
     assert r.is_error and "user_confirmed=true" in text_of(r) and "Nothing was sent" in text_of(r)
     assert chats.writes() == []
 
 
 async def test_send_draft_without_a_saved_draft(server, chats):
-    r = await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    r = await call_tool(server, "send_draft", {"chat": GROUP, "draft": "made-up", "user_confirmed": True})
     assert r.is_error and "save_draft" in text_of(r)
+    other = await saved(server, chat=GROUP2, text="for the other chat")
+    r = await call_tool(server, "send_draft", {"chat": GROUP, "draft": other, "user_confirmed": True})
+    assert r.is_error and chats.writes() == []  # a draft is bound to its chat
     assert chats.writes() == []
 
 
 async def test_send_draft_sends_exactly_the_saved_text_once(server, chats):
     chats.rapi("message/send", ok({"msgId": 99, "time": 1_800_000_500}))
-    await call_tool(server, "save_draft", {"chat": GROUP, "text": "exact words"})
-    r = await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    d = await saved(server, chat=GROUP, text="exact words")
+    r = await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
     assert r.structured_content["message"] == "99" and r.structured_content["sends_left"] == 9
     p = chats.calls("message/send")[0].params
     assert p["target"] == GROUP and p["parts"] == {"mainPart": {"text": {"plain": "exact words"}}} and p["localMsgId"]
-    again = await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
-    assert again.is_error and len(chats.calls("message/send")) == 1
+    # Sending the same draft again carries the same localMsgId, which VK Teams answers with the same message
+    # (live): nothing is posted twice, and no server keeps a record of it.
+    await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
+    ids = [s.params["localMsgId"] for s in chats.calls("message/send")]
+    assert len(ids) == 2 and ids[0] == ids[1]
 
 
 async def test_mentions_are_resolved_by_name_into_the_text(server, chats):
     chats.rapi("search", ok({"data": [{"sn": "ann@example.com", "anketa": {"friendly": "Ann Smith"}}]}))
     chats.rapi("message/send", ok({"msgId": 1}))
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "please check", "mention": ["Ann Smith"]})
+    d = r.structured_content["draft"]
     assert r.structured_content["mentions"] == ["ann@example.com"]
-    await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
     text = chats.calls("message/send")[0].params["parts"]["mainPart"]["text"]["plain"]
     assert text == "@[ann@example.com] please check"
 
@@ -130,8 +137,8 @@ async def test_an_ambiguous_person_is_refused_with_candidates(server, chats):
 async def test_a_reply_quotes_the_message(server, chats):
     chats.rapi("getHistory", HISTORY)
     chats.rapi("message/send", ok({"msgId": 2}))
-    await call_tool(server, "save_draft", {"chat": GROUP, "text": "agreed", "reply_to": "20"})
-    await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    d = await saved(server, {"chat": GROUP, "text": "agreed", "reply_to": "20"})
+    await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
     parts = chats.calls("message/send")[0].params["parts"]
     assert parts["quoteParts"][0]["msgId"] == 20 and parts["quoteParts"][0]["sn"] == "ann@example.com"
     assert parts["quoteParts"][0]["text"]["plain"]
@@ -139,13 +146,14 @@ async def test_a_reply_quotes_the_message(server, chats):
 
 async def test_a_scheduled_draft_is_queued(server, chats):
     chats.rapi("message/send", ok({"scheduled": {"scheduledMsgId": 4, "queuedMessagesCount": 1}}, code=20020))
+    chats.rapi("message/scheduled/history/get", ok({"messages": {"new": []}}))
     import datetime
     import time
     from zoneinfo import ZoneInfo
 
     when = (datetime.datetime.now(ZoneInfo("Europe/Moscow")) + datetime.timedelta(days=30)).strftime("%Y-%m-%d %H:%M")
-    await call_tool(server, "save_draft", {"chat": GROUP, "text": "later", "send_at": when})
-    r = (await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})).structured_content
+    d = await saved(server, {"chat": GROUP, "text": "later", "send_at": when})
+    r = (await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})).structured_content
     assert r["scheduled_id"] == "4" and r["scheduled_for"] == when
     assert chats.calls("message/send")[0].params["schedule"]["scheduledTime"] > time.time() + 29 * 86400
 
@@ -159,8 +167,8 @@ async def test_a_poll_needs_two_to_ten_answers(server, chats):
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "?", "poll_options": ["only one"]})
     assert r.is_error
     chats.rapi("message/send", ok({"msgId": 3}))
-    await call_tool(server, "save_draft", {"chat": GROUP, "text": "lunch?", "poll_options": ["yes", "no"]})
-    await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    d = await saved(server, {"chat": GROUP, "text": "lunch?", "poll_options": ["yes", "no"]})
+    await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
     main = chats.calls("message/send")[0].params["parts"]["mainPart"]
     assert main["poll"] == {"type": "anon", "responses": ["yes", "no"]} and main["text"]["plain"] == "lunch?"
 
@@ -169,8 +177,9 @@ async def test_send_draft_waits_for_announced_files(server, chats):
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "report", "attach": ["report.pdf"]})
     up = r.structured_content["upload"][0]
     assert up["command"].startswith("curl -fsS --globoff -T report.pdf 'https://mcp.example.org/files/u/")
-    r = await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
-    assert r.is_error and "not been uploaded" in text_of(r)
+    d = r.structured_content["draft"]
+    r = await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
+    assert r.is_error and "uploaded first" in text_of(r)
     assert chats.writes() == []
 
 
@@ -300,32 +309,26 @@ async def test_an_address_written_in_the_text_becomes_a_mention(server, chats):
     chats.rapi("message/send", ok({"msgId": 1}))
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "ping @ann@example.com please"})
     assert r.structured_content["mentions"] == ["ann@example.com"]
-    await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    d = r.structured_content["draft"]
+    await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
     assert (
         chats.calls("message/send")[0].params["parts"]["mainPart"]["text"]["plain"] == "ping @[ann@example.com] please"
     )
 
 
-async def test_a_partial_send_resumes_without_posting_twice(server, chats):
+async def _draft_with_a_file(server, **extra):
+    """A draft with one attachment, and the sealed file its upload would print."""
     from vkteams_mcp.core import context
 
-    rt = context.runtime()
-    person = context.person_override.get()
-    up = rt.links.announce_uploads(person, GROUP, ["a.txt"])[0]
-    rt.store.save_draft(
-        person,
-        GROUP,
-        {
-            "version": "v1",
-            "text": "see file",
-            "files": [up["id"]],
-            "send_at": None,
-            "local_ids": {"main": "L-main", up["id"]: "L-file"},
-            "sent": [],
-        },
-        10**10,
-    )
-    rt.links.finish_upload(up["id"], {"url": "https://files.example.com/get/F1"})
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "see file", "attach": ["a.txt"], **extra})
+    assert not r.is_error, r.content
+    uid = context.runtime().sealer.open("draft", r.structured_content["draft"])["files"][0]
+    file = context.runtime().links.finished({"uid": uid, "chat": GROUP}, {"url": "https://files.example.com/get/F1"})
+    return r.structured_content["draft"], file
+
+
+async def test_a_partial_send_resumes_without_posting_twice(server, chats):
+    d, file = await _draft_with_a_file(server)
     calls = {"n": 0}
 
     def flaky(seen):
@@ -333,32 +336,46 @@ async def test_a_partial_send_resumes_without_posting_twice(server, chats):
         return ok({"msgId": 5}) if calls["n"] != 2 else {"status": {"code": 40000, "reason": "rejected"}}
 
     chats.rapi("message/send", flaky)
-    first = await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    args = {"chat": GROUP, "draft": d, "files": [file], "user_confirmed": True}
+    first = await call_tool(server, "send_draft", args)
     assert first.is_error  # the file went, the text was refused
-    await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
-    sent = [s.params for s in chats.calls("message/send")]
-    assert [p["localMsgId"] for p in sent] == ["L-file", "L-main", "L-main"]  # the file was not posted again
+    await call_tool(server, "send_draft", args)
+    ids = [s.params["localMsgId"] for s in chats.calls("message/send")]
+    # the retry sends both parts again with the same localMsgIds: VK Teams posts the file once (live)
+    assert len(ids) == 4 and ids[0] == ids[2] and ids[1] == ids[3] and ids[0] != ids[1]
 
 
 async def test_a_scheduled_draft_schedules_its_files_too(server, chats):
-    from vkteams_mcp.core import context
+    import datetime
+    from zoneinfo import ZoneInfo
 
-    rt = context.runtime()
-    person = context.person_override.get()
-    up = rt.links.announce_uploads(person, GROUP, ["a.txt"])[0]
-    rt.store.save_draft(
-        person,
-        GROUP,
-        {"version": "v1", "text": "later", "files": [up["id"]], "send_at": 4_000_000_000, "local_ids": {}, "sent": []},
-        10**10,
-    )
-    rt.links.finish_upload(up["id"], {"url": "https://files.example.com/get/F1"})
+    when = (datetime.datetime.now(ZoneInfo("Europe/Moscow")) + datetime.timedelta(days=30)).strftime("%Y-%m-%d %H:%M")
+    d, file = await _draft_with_a_file(server, send_at=when)
+    chats.rapi("message/scheduled/history/get", ok({"messages": {"new": []}}))
     chats.rapi("message/send", ok({"scheduled": {"scheduledMsgId": 9}}, code=20020))
-    await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
-    assert all(s.params["schedule"] == {"scheduledTime": 4_000_000_000} for s in chats.calls("message/send"))
+    r = await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "files": [file], "user_confirmed": True})
+    assert not r.is_error, r.content
+    sends = chats.calls("message/send")
+    assert len(sends) == 2 and len({s.params["schedule"]["scheduledTime"] for s in sends}) == 1
 
 
-async def test_two_overlapping_sends_send_once(server, chats):
+async def test_a_scheduled_draft_sent_again_is_not_queued_twice(server, chats):
+    """Live: a scheduled resend with the same localMsgId is queued twice, so the queue is checked first."""
+    import datetime
+    from zoneinfo import ZoneInfo
+
+    when = (datetime.datetime.now(ZoneInfo("Europe/Moscow")) + datetime.timedelta(days=3)).replace(
+        second=0, microsecond=0
+    )
+    d = await saved(server, chat=GROUP, text="later", send_at=when.strftime("%Y-%m-%d %H:%M"))
+    queued = {"scheduledMsgId": 7, "scheduledTime": int(when.timestamp()), "parts": [{"text": "later"}]}
+    chats.rapi("message/scheduled/history/get", ok({"messages": {"new": [queued]}}))
+    r = await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
+    assert not r.is_error and r.structured_content["scheduled_id"] == "7" and r.structured_content["already_scheduled"]
+    assert chats.calls("message/send") == []
+
+
+async def test_two_overlapping_sends_post_the_same_message(server, chats):
     import asyncio
 
     from mcp import Client
@@ -366,7 +383,7 @@ async def test_two_overlapping_sends_send_once(server, chats):
     from vkteams_mcp.api.client import VK
 
     chats.rapi("message/send", ok({"msgId": 1}))
-    await call_tool(server, "save_draft", {"chat": GROUP, "text": "once"})
+    d = await saved(server, chat=GROUP, text="once")
     slow = VK.rapi
 
     async def slowly(self, method, params=None, *, write=False):
@@ -377,20 +394,18 @@ async def test_two_overlapping_sends_send_once(server, chats):
     VK.rapi = slowly
     try:
         async with Client(server) as a, Client(server) as b:
-            r = await asyncio.gather(
-                a.call_tool("send_draft", {"chat": GROUP, "user_confirmed": True}),
-                b.call_tool("send_draft", {"chat": GROUP, "user_confirmed": True}),
-            )
+            args = {"chat": GROUP, "draft": d, "user_confirmed": True}
+            await asyncio.gather(a.call_tool("send_draft", args), b.call_tool("send_draft", args))
     finally:
         VK.rapi = slow
-    assert sorted(x.is_error for x in r) == [False, True]
-    assert len(chats.calls("message/send")) == 1
+    ids = {s.params["localMsgId"] for s in chats.calls("message/send")}
+    assert len(ids) == 1  # however many times it is sent, it is one message to VK Teams
 
 
 async def test_an_address_that_extends_another_stays_whole(server, chats):
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "@ann@example.com and @ann@example.com.au"})
     assert sorted(r.structured_content["mentions"]) == ["ann@example.com", "ann@example.com.au"]
-    assert "@[ann@example.com] and @[ann@example.com.au]" in r.structured_content["draft"]
+    assert "@[ann@example.com] and @[ann@example.com.au]" in r.structured_content["text"]
 
 
 async def test_names_from_others_cannot_forge_a_marker(server, chats):

@@ -28,6 +28,7 @@ from conftest import (
     dialogs,
     history_like_vk,
     ok,
+    saved,
 )
 
 BIG = 7700000000000000301  # shaped like a live id: 2^53 < BIG, so a float cannot hold it
@@ -138,8 +139,8 @@ async def test_a_reply_quotes_the_exact_message(server, big):
 
 async def test_a_sent_message_id_is_a_string(server, chats):
     chats.rapi("message/send", ok({"msgId": BIG, "time": 1_800_000_000}))
-    await call_tool(server, "save_draft", {"chat": GROUP, "text": "hello"})
-    r = await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    d = await saved(server, {"chat": GROUP, "text": "hello"})
+    r = await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})
     assert not r.is_error, r.content
     assert r.structured_content["message"] == str(BIG)
 
@@ -266,12 +267,12 @@ async def test_a_download_passes_range_through(fake, tmp_path, session):
     from vkteams_mcp.core import context
 
     app, _, _ = build(
-        Settings(public_url=PUBLIC, secret=SECRET, database=str(tmp_path / "db.sqlite")),
+        Settings(public_url=PUBLIC, secret=SECRET),
         http=httpx.AsyncClient(transport=fake.transport()),
     )
     rt = context.runtime()
-    person = rt.store.save_session(session)
-    context.person_override.set(person)
+    context.session_override.set(session)
+    person = session
 
     def answer(seen):
         assert seen.headers.get("range") == "bytes=0-3"
@@ -295,12 +296,12 @@ async def test_a_malformed_range_is_not_passed_on(fake, tmp_path, session):
     from vkteams_mcp.core import context
 
     app, _, _ = build(
-        Settings(public_url=PUBLIC, secret=SECRET, database=str(tmp_path / "db.sqlite")),
+        Settings(public_url=PUBLIC, secret=SECRET),
         http=httpx.AsyncClient(transport=fake.transport()),
     )
     rt = context.runtime()
-    person = rt.store.save_session(session)
-    context.person_override.set(person)
+    context.session_override.set(session)
+    person = session
     seen_range = []
 
     def answer(seen):
@@ -330,12 +331,12 @@ def web(fake, tmp_path, session):
     from vkteams_mcp.core import context
 
     app, _, _ = build(
-        Settings(public_url=PUBLIC, secret=SECRET, database=str(tmp_path / "db.sqlite")),
+        Settings(public_url=PUBLIC, secret=SECRET),
         http=httpx.AsyncClient(transport=fake.transport()),
     )
     rt = context.runtime()
-    person = rt.store.save_session(session)
-    context.person_override.set(person)
+    context.session_override.set(session)
+    person = session
 
     async def get(answer, **kw):
         from test_files import urlpath

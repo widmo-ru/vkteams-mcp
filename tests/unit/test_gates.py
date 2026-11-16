@@ -143,13 +143,14 @@ async def test_a_full_message_flow_logs_no_content(server, chats, caplog):
     )
     chats.rapi("message/send", ok({"msgId": 2}))
     chats.rapi("search", ok({"data": [{"sn": "ann@example.com", "anketa": {"friendly": "Ann Smith"}}]}))
-    for name, args in (
-        ("list_messages", {"chat": "Project Alpha"}),
-        ("save_draft", {"chat": GROUP, "text": "confidential reply", "mention": ["Ann Smith"]}),
-        ("send_draft", {"chat": GROUP, "user_confirmed": True}),
-    ):
-        r = await call_tool(server, name, args)
-        assert not r.is_error, name  # the content-bearing paths must actually run, not refuse early
+    r = await call_tool(server, "list_messages", {"chat": "Project Alpha"})
+    assert not r.is_error  # the content-bearing paths must actually run, not refuse early
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "confidential reply", "mention": ["Ann Smith"]})
+    assert not r.is_error
+    r = await call_tool(
+        server, "send_draft", {"chat": GROUP, "draft": r.structured_content["draft"], "user_confirmed": True}
+    )
+    assert not r.is_error
     await call_tool(server, "get_chat", {"chat": "Project"})  # an ambiguous name: candidates in the result only
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert logged, "nothing was logged at all: the check would pass vacuously"

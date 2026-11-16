@@ -62,13 +62,13 @@ async def test_paging_through_history_returns_every_message_once(server, chats):
 async def test_an_address_before_punctuation_becomes_a_mention(server, chats, tail):
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": f"ping @ann@example.com{tail}"})
     assert not r.is_error, r.content
-    assert f"@[ann@example.com]{tail}" in r.structured_content["draft"]
+    assert f"@[ann@example.com]{tail}" in r.structured_content["text"]
 
 
 async def test_an_address_listed_in_mentions_is_a_mention_in_the_text(server, chats):
     r = (await call_tool(server, "save_draft", {"chat": GROUP, "text": "see @ann@example.com."})).structured_content
     for addr in r.get("mentions") or []:
-        assert f"@[{addr}]" in r["draft"]
+        assert f"@[{addr}]" in r["text"]
 
 
 # ---------------------------------------------------------------- limits not covered elsewhere
@@ -77,7 +77,7 @@ async def test_an_address_listed_in_mentions_is_a_mention_in_the_text(server, ch
 async def test_a_text_over_ten_thousand_characters_is_refused_and_saves_nothing(server, chats):
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "a" * 10_001})
     assert r.is_error
-    sent = await call_tool(server, "send_draft", {"chat": GROUP, "user_confirmed": True})
+    sent = await call_tool(server, "send_draft", {"chat": GROUP, "draft": "none", "user_confirmed": True})
     assert sent.is_error and chats.writes() == []
 
 
@@ -201,12 +201,12 @@ async def test_a_range_past_the_end_names_the_length_even_when_vk_does_not(fake,
     from vkteams_mcp.core import context
 
     app, _, _ = build(
-        Settings(public_url=PUBLIC, secret=SECRET, database=str(tmp_path / "db.sqlite")),
+        Settings(public_url=PUBLIC, secret=SECRET),
         http=httpx.AsyncClient(transport=fake.transport()),
     )
     rt = context.runtime()
-    person = rt.store.save_session(session)
-    context.person_override.set(person)
+    context.session_override.set(session)
+    person = session
     fake.on("GET", "/api/v139/files/get/signed", httpx.Response(416), host=BIN_HOST)
     link = rt.links.download(person, f"https://{BIN_HOST}/api/v139/files/get/signed", "a.bin", size=65536)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=PUBLIC) as c:
@@ -229,9 +229,12 @@ async def test_an_upload_command_turns_curl_globbing_off(make_server, chats):
 def test_a_download_command_turns_curl_globbing_off():
     import shlex
 
+    from vkteams_mcp.core.seal import Sealer
     from vkteams_mcp.links.links import Links
 
-    argv = shlex.split(Links("https://mcp.example.org").download("p", "https://x/y", "a[1-9].txt")["command"])
+    argv = shlex.split(
+        Links("https://mcp.example.org", Sealer("x" * 40)).download(_session(), "https://x/y", "a[1-9].txt")["command"]
+    )
     assert "--globoff" in argv or "-g" in argv
 
 
@@ -281,3 +284,9 @@ async def test_a_call_inviting_more_than_twenty_people_is_refused(server, chats)
     people = [f"p{i}@example.com" for i in range(21)]
     r = await call_tool(server, "save_call_link", {"title": "sync", "invite": people, "user_confirmed": True})
     assert r.is_error and chats.writes() == []
+
+
+def _session():
+    from vkteams_mcp.api.session import VKSession
+
+    return VKSession("teams.example.com", "files.example.com", 139, "d", "me@example.com", "a", "k", 0, "s", "u", "me")

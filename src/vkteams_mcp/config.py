@@ -32,7 +32,6 @@ def _zone(name: str) -> str:
 class Settings:
     public_url: str
     secret: str
-    database: str = "vkteams-mcp.sqlite"
     areas: frozenset[str] = field(default_factory=lambda: parse_areas(None))
     policy: Policy = field(default_factory=Policy)
     dev_id: str = DEFAULT_DEV_ID
@@ -63,7 +62,6 @@ class Settings:
         return cls(
             public_url=public_url,
             secret=secret,
-            database=e.get("VKTEAMS_MCP_DATABASE", "vkteams-mcp.sqlite"),
             areas=areas,
             policy=policy,
             dev_id=e.get("VKTEAMS_MCP_DEV_ID", DEFAULT_DEV_ID),

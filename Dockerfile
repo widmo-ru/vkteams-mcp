@@ -9,12 +9,12 @@ RUN uv export --frozen --no-dev --no-emit-project -o requirements.txt \
 
 FROM python:3.12-slim-bookworm
 RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/* \
- && useradd --uid 10001 --shell /usr/sbin/nologin --create-home app && mkdir /data && chown app /data
+ && useradd --uid 10001 --shell /usr/sbin/nologin --create-home app
 COPY --from=build /deps /opt/deps
 COPY --from=build /app /opt/app
 COPY LICENSE NOTICE /opt/
 ENV PYTHONPATH=/opt/app:/opt/deps PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
-    VKTEAMS_MCP_DATABASE=/data/vkteams-mcp.sqlite PORT=8000
+    PORT=8000
 USER 10001
 EXPOSE 8000
 CMD ["python", "-m", "vkteams_mcp.app"]

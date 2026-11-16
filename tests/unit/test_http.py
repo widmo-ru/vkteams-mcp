@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlsplit
 
@@ -25,10 +26,10 @@ def app(fake, tmp_path):
     from vkteams_mcp.config import Settings
     from vkteams_mcp.core import context
 
-    settings = Settings(public_url=PUBLIC, secret=SECRET, database=str(tmp_path / "db.sqlite"))
+    settings = Settings(public_url=PUBLIC, secret=SECRET)
     app, _, provider = build(settings, http=httpx.AsyncClient(transport=fake.transport()))
     context.runtime().resolve = public_resolver
-    context.person_override.set(None)
+    context.session_override.set(None)
     return app
 
 
@@ -104,7 +105,14 @@ async def sign_in(web, fake, rid, code="ab12cd") -> httpx.Response:
     assert page.status_code == 200 and "VK Teams server" in page.text
     step2 = await web.post("/signin", data={"request": rid, "step": "address", "server": HOST, "email": ME})
     assert step2.status_code == 200 and 'name="code"' in step2.text, step2.text
-    return await web.post("/signin", data={"request": rid, "step": "code", "code": code})
+    return await web.post("/signin", data={"request": rid, "step": "code", "pending": pending_of(step2), "code": code})
+
+
+def pending_of(page: httpx.Response) -> str:
+    """The sealed code step the browser carries back, as the form holds it."""
+    import html as h
+
+    return h.unescape(re.search(r'name="pending" value="([^"]+)"', page.text).group(1))
 
 
 async def full_flow(web, fake) -> dict:
@@ -226,7 +234,7 @@ async def test_the_sign_in_page_escapes_what_was_typed(app, fake):
         assert "<script>x</script>" not in r.text and "&lt;script&gt;" in r.text
 
 
-async def test_refresh_rotates_over_http(app, fake):
+async def test_the_client_refreshes_its_tokens_over_http(app, fake):
     async with serve(app) as web:
         tok = await full_flow(web, fake)
         r = await web.post(
@@ -234,8 +242,10 @@ async def test_refresh_rotates_over_http(app, fake):
             data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"], "client_id": tok["client_id"]},
         )
         assert r.status_code == 200 and r.json()["access_token"] != tok["access_token"]
-        old = await mcp(web, tok["access_token"], "tools/list")
-        assert old.status_code == 401
+        fresh = await mcp(web, r.json()["access_token"], "tools/list")
+        assert fresh.status_code == 200
+        forged = await mcp(web, tok["access_token"][:-4] + "AAAA", "tools/list")
+        assert forged.status_code == 401
 
 
 async def test_a_foreign_host_header_is_refused(app, fake):
@@ -266,7 +276,6 @@ async def test_a_connector_pinned_to_one_installation_asks_only_the_e_mail(fake,
     settings = Settings(
         public_url=PUBLIC,
         secret=SECRET,
-        database=str(tmp_path / "pinned.sqlite"),
         policy=Policy(installations=frozenset({HOST})),
     )
     app, _, _ = build(settings, http=httpx.AsyncClient(transport=fake.transport()))

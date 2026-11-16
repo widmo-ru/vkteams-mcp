@@ -50,7 +50,7 @@ async def download_file(
             raise VKError("not_found")
         size = info.get("file_size")
         size = int(size) if isinstance(size, int) or (isinstance(size, str) and size.isdigit()) else None
-        link = c.rt.links.download(c.person, info["dlink"], info.get("file_name") or fid, size)
+        link = c.rt.links.download(c.vk.s, info["dlink"], info.get("file_name") or fid, size)
         return compact(
             {
                 "name": content_line("file name", info.get("file_name") or fid),

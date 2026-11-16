@@ -132,7 +132,7 @@
       },
       "area": "messages",
       "gates": {},
-      "input_schema_sha256": "7d0bd515a88463894ec4ba0d2bc510368178729272f8957f4b90bfb31d7126b8"
+      "input_schema_sha256": "d957acc3b26c042a7669bc763f26b2eb0481df15ff4110e0d4672af1f46f811c"
     },
     "update_chat": {
       "annotations": {

@@ -54,28 +54,10 @@ MUTATIONS = [
         ["tests/unit/test_server.py::test_an_unknown_argument_is_refused_before_upstream"],
     ),
     (
-        "no send without a draft",
-        "tools/messages.py",
-        [('if draft is None:\n                raise VKError("no_draft")', "if False:\n                pass")],
-        ["tests/unit/test_messages.py::test_send_draft_without_a_saved_draft"],
-    ),
-    (
-        "a draft is sent once",
-        "tools/messages.py",
-        [('c.rt.store.delete_draft(c.person, sn, version=draft.get("version"))', "pass")],
-        ["tests/unit/test_messages.py::test_send_draft_sends_exactly_the_saved_text_once"],
-    ),
-    (
         "only own messages",
         "tools/messages.py",
         [('if not m.get("outgoing"):', "if False:")],
         ["tests/unit/test_messages.py::test_only_own_messages_change"],
-    ),
-    (
-        "files before send",
-        "tools/messages.py",
-        [("if files is None:", "if False:")],
-        ["tests/unit/test_messages.py::test_send_draft_waits_for_announced_files"],
     ),
     (
         "private networks",
@@ -96,38 +78,6 @@ MUTATIONS = [
         ["tests/unit/test_install.py::test_redirects_are_not_followed"],
     ),
     (
-        "sealed to the person",
-        "oauth/store.py",
-        [
-            ("session.to_json().encode(), pid.encode())", "session.to_json().encode(), None)"),
-            ("blob[12:], person_id.encode())", "blob[12:], None)"),
-        ],
-        ["tests/unit/test_oauth.py::test_a_sealed_session_cannot_be_moved_to_another_person"],
-    ),
-    (
-        "a code belongs to its client",
-        "oauth/provider.py",
-        [("if client_id != client.client_id or expires < self._clock():", "if expires < self._clock():")],
-        ["tests/unit/test_oauth.py::test_a_code_belongs_to_its_client"],
-    ),
-    (
-        "a code is used once",
-        "oauth/provider.py",
-        [("self.store.delete_code(authorization_code.code)", "pass")],
-        ["tests/unit/test_oauth.py::test_a_code_is_used_once"],
-    ),
-    (
-        "refresh retires the old pair",
-        "oauth/provider.py",
-        [
-            (
-                '        # second use of it revokes the chain.\n        self.store.revoke_family(row["family"])',
-                "        # second use of it revokes the chain.\n        pass",
-            )
-        ],
-        ["tests/unit/test_oauth.py::test_refresh_rotates_and_the_old_refresh_token_dies"],
-    ),
-    (
         "code requests are limited",
         "api/login.py",
         [("if self._hit(a, CODES_PER_ADDRESS_PER_HOUR) or", "if False and")],
@@ -142,14 +92,8 @@ MUTATIONS = [
     (
         "downloads only from the installation",
         "links/routes.py",
-        [("if urlsplit(url).hostname not in (session.binary_host, session.host)", "if False")],
+        [('if urlsplit(url).hostname not in link["hosts"]', "if False")],
         ["tests/unit/test_files.py::test_a_download_link_pointing_elsewhere_is_refused"],
-    ),
-    (
-        "an upload link works once",
-        "links/links.py",
-        [("if link is None or link.done is not None or link.busy:", "if link is None:")],
-        ["tests/unit/test_files.py::test_an_upload_lands_in_vk_teams_and_send_draft_posts_it"],
     ),
     (
         "one message by its own id",
@@ -159,31 +103,6 @@ MUTATIONS = [
             "tests/unit/test_messages.py::test_one_message_is_fetched_by_its_own_id",
             "tests/unit/test_messages.py::test_only_own_messages_change",
         ],
-    ),
-    (
-        "overlapping sends send once",
-        "tools/messages.py",
-        [
-            (
-                "# One send per person and chat at a time: two overlapping calls must not both send the same draft.\n"
-                "        async with _lock(c.rt, c.person, sn):",
-                "async with contextlib.nullcontext():",
-            ),
-            ("import asyncio\n", "import asyncio\nimport contextlib\n"),
-        ],
-        ["tests/unit/test_messages.py::test_two_overlapping_sends_send_once"],
-    ),
-    (
-        "a partial send resumes",
-        "tools/messages.py",
-        [("if fid not in done:", "if True:")],
-        ["tests/unit/test_messages.py::test_a_partial_send_resumes_without_posting_twice"],
-    ),
-    (
-        "a reused refresh token revokes the chain",
-        "oauth/provider.py",
-        [('            self.store.revoke_family(used["family"])\n            return None', "            return None")],
-        ["tests/unit/test_oauth.py::test_a_reused_refresh_token_revokes_the_whole_chain"],
     ),
     (
         "a download name is never a path",
@@ -196,18 +115,6 @@ MUTATIONS = [
         "api/egress.py",
         [("if not ip.is_global or ip.is_multicast:", "if False:")],
         ["tests/unit/test_egress.py::test_a_name_resolving_to_loopback_is_refused"],
-    ),
-    (
-        "drafts sealed at rest",
-        "oauth/store.py",
-        [
-            (
-                'sealed = self._seal(json.dumps(data).encode(), f"draft\\n{person_id}\\n{chat}")',
-                "sealed = json.dumps(data).encode()",
-            ),
-            ('plain = self._open(rows[0][0], f"draft\\n{person_id}\\n{chat}")', "plain = rows[0][0]"),
-        ],
-        ["tests/unit/test_oauth.py::test_drafts_are_sealed_at_rest"],
     ),
     (
         "a cursor belongs to its list",
@@ -301,7 +208,7 @@ MUTATIONS = [
     (
         "a 416 names the length",
         "links/routes.py",
-        [('if not unsatisfied and isinstance(link.data.get("size"), int):', "if False:")],
+        [('if not unsatisfied and isinstance(link.get("size"), int):', "if False:")],
         ["tests/unit/test_qa_live_scenarios.py::test_a_range_past_the_end_names_the_length_even_when_vk_does_not"],
     ),
     (
@@ -397,10 +304,169 @@ MUTATIONS = [
         ["tests/unit/test_qa_attacks.py::test_a_poll_answer_of_invisible_characters_is_refused"],
     ),
     (
+        "VK Teams down is not a refused token",
+        "api/client.py",
+        [
+            (
+                'raise VKError("failed_read" if isinstance(code, int) and code >= 500 else "reconnect")',
+                'raise VKError("reconnect")',
+            )
+        ],
+        ["tests/unit/test_replicas.py::test_a_disconnect_while_vk_teams_is_down_is_reported"],
+    ),
+    (
+        "save_draft refuses what it cannot seal",
+        "tools/messages.py",
+        [("    except TooLarge:\n", "    except ZeroDivisionError:\n")],
+        ["tests/unit/test_replicas.py::test_save_draft_refuses_a_draft_too_large_to_seal"],
+    ),
+    (
         "no aimsid in logs",
         "api/client.py",
         [('logging.getLogger("httpx").setLevel(logging.WARNING)', "pass")],
         ["tests/unit/test_gates.py::test_a_full_message_flow_logs_no_content"],
+    ),
+    (
+        "a sealed blob is bound to its kind",
+        "core/seal.py",
+        [
+            ("self._aead.decrypt(raw[:12], raw[12:], kind.encode())", "self._aead.decrypt(raw[:12], raw[12:], None)"),
+            (
+                "self._aead.encrypt(nonce, zlib.compress(body, 9), kind.encode())",
+                "self._aead.encrypt(nonce, zlib.compress(body, 9), None)",
+            ),
+        ],
+        ["tests/unit/test_oauth.py::test_a_blob_of_one_kind_is_not_another"],
+    ),
+    (
+        "a sealed blob expires",
+        "core/seal.py",
+        [('or body["exp"] < self._clock():', ":")],
+        [
+            "tests/unit/test_oauth.py::test_tokens_expire",
+            "tests/unit/test_oauth.py::test_a_code_and_a_sign_in_request_expire",
+        ],
+    ),
+    (
+        "a code belongs to its client",
+        "oauth/provider.py",
+        [
+            (
+                'if p is None or p["client_id"] != client.client_id or authorization_code in self._used_codes:',
+                "if p is None or authorization_code in self._used_codes:",
+            )
+        ],
+        ["tests/unit/test_oauth.py::test_a_code_belongs_to_its_client"],
+    ),
+    (
+        "a code is used once",
+        "oauth/provider.py",
+        [(" or authorization_code in self._used_codes:", ":")],
+        ["tests/unit/test_oauth.py::test_a_code_is_used_once"],
+    ),
+    (
+        "a refresh token belongs to its client",
+        "oauth/provider.py",
+        [
+            (
+                '        if p is None or p["client_id"] != client.client_id:\n            return None\n'
+                "        return RefreshToken(",
+                "        if p is None:\n            return None\n        return RefreshToken(",
+            )
+        ],
+        ["tests/unit/test_oauth.py::test_a_refresh_token_belongs_to_its_client"],
+    ),
+    (
+        "revoking ends the VK Teams session",
+        "oauth/provider.py",
+        [('            await self._end_session(VKSession.from_json(p["s"]))', "            pass")],
+        ["tests/unit/test_oauth.py::test_revoking_a_token_ends_the_vk_teams_session"],
+    ),
+    (
+        "a draft belongs to its person and chat",
+        "tools/messages.py",
+        [('if saved is None or saved.get("p") != c.person or saved.get("chat") != sn:', "if saved is None:")],
+        ["tests/unit/test_messages.py::test_send_draft_without_a_saved_draft"],
+    ),
+    (
+        "files before send",
+        "tools/messages.py",
+        [
+            (
+                'if got is None or sorted(f["uid"] for f in got) != sorted(wanted) '
+                'or any(f["chat"] != sn for f in got):',
+                "if False:",
+            )
+        ],
+        ["tests/unit/test_messages.py::test_send_draft_waits_for_announced_files"],
+    ),
+    (
+        "a resend keeps its localMsgId",
+        "tools/messages.py",
+        [
+            (
+                'result = await _send(c, sn, parts, when, ids.get("main"))',
+                "result = await _send(c, sn, parts, when, None)",
+            )
+        ],
+        [
+            "tests/unit/test_messages.py::test_send_draft_sends_exactly_the_saved_text_once",
+            "tests/unit/test_messages.py::test_two_overlapping_sends_post_the_same_message",
+        ],
+    ),
+    (
+        "a scheduled resend is not queued twice",
+        "tools/messages.py",
+        [("        queued = await _already_scheduled(c, sn, parts, when)", "        queued = None")],
+        ["tests/unit/test_messages.py::test_a_scheduled_draft_sent_again_is_not_queued_twice"],
+    ),
+    (
+        "a lost upload response can be uploaded again",
+        "links/routes.py",
+        [('        rt.links.release_upload(link["uid"])', "        pass")],
+        ["tests/unit/test_files.py::test_an_upload_lands_in_vk_teams_and_send_draft_posts_it"],
+    ),
+    (
+        "a blob too large to open is never made",
+        "core/seal.py",
+        [("        if len(blob) > MAX_BLOB:", "        if False:")],
+        ["tests/unit/test_replicas.py::test_a_blob_too_large_to_open_is_never_made"],
+    ),
+    (
+        "a poll answer has a length limit",
+        "tools/messages.py",
+        [("        if any(len(o) > MAX_POLL_OPTION for o in poll_options):", "        if False:")],
+        ["tests/unit/test_replicas.py::test_a_long_poll_answer_is_refused_at_save"],
+    ),
+    (
+        "only plain text is matched against the queue",
+        "tools/messages.py",
+        [
+            (
+                "queued = await _already_scheduled(c, sn, parts, when) if plain else None",
+                "queued = await _already_scheduled(c, sn, parts, when)",
+            )
+        ],
+        ["tests/unit/test_replicas.py::test_a_scheduled_poll_is_not_mistaken_for_queued_text"],
+    ),
+    (
+        "a failed disconnect is reported",
+        "api/client.py",
+        [('            if e.key != "reconnect":', "            if False:")],
+        ["tests/unit/test_replicas.py::test_a_failed_disconnect_is_reported_not_swallowed"],
+    ),
+    (
+        "a full code cache keeps recording",
+        "oauth/provider.py",
+        [
+            ("        while len(self._used_codes) >= USED_CODES_MAX:", "        while False:"),
+            (
+                "        self._used_codes[authorization_code.code] = authorization_code.expires_at",
+                "        if len(self._used_codes) < USED_CODES_MAX:\n"
+                "            self._used_codes[authorization_code.code] = authorization_code.expires_at",
+            ),
+        ],
+        ["tests/unit/test_replicas.py::test_a_full_code_cache_still_refuses_the_newest_replay"],
     ),
 ]
 

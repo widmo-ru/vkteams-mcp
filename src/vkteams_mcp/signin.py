@@ -12,9 +12,11 @@ are served from /static, and a strict Content-Security-Policy says so to the bro
 
 from __future__ import annotations
 
+import hashlib
 import html
+import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 from starlette.requests import Request
@@ -31,19 +33,15 @@ STATIC = Path(__file__).resolve().parent / "static"
 _STATIC_TYPES = {".woff2": "font/woff2", ".css": "text/css; charset=utf-8", ".txt": "text/plain; charset=utf-8"}
 
 
-@dataclass
-class Pending:
-    installation: Installation
-    address: str
-    expires: float
-    tries: int = 0
-
-
 class SignIn:
+    """Two form posts, nothing kept: the address step answers with a sealed `pending` field (the installation,
+    the address and the sign-in request it belongs to), and the code step brings it back. Wrong codes are
+    counted per replica; VK Teams counts them too."""
+
     def __init__(self, provider) -> None:
         self.provider = provider
         self.limiter = CodeLimiter()
-        self._pending: dict[str, Pending] = {}
+        self._tries: dict[str, tuple[float, int]] = {}
 
     async def page(self, request: Request) -> Response:
         lang = pick_lang(request.headers.get("accept-language", ""))
@@ -65,13 +63,12 @@ class SignIn:
         if ctx is None:
             return _page(lang, error=T[lang]["expired"], status=410)
         if form.get("step") == "code":
-            return await self._code(lang, rid, str(form.get("code", "")), ctx)
+            return await self._code(lang, rid, str(form.get("pending", "")), str(form.get("code", "")), ctx)
         server = self._fixed() or str(form.get("server", ""))
         return await self._address(lang, request, rid, server, str(form.get("email", "")), ctx)
 
     async def _address(self, lang: str, request: Request, rid: str, server: str, email: str, ctx: dict) -> Response:
         rt = runtime()
-        self._pending.pop(rid, None)  # a restarted address step invalidates the previous code step at once
         email = email.strip()
         again = _step1(lang, rid, server, email, self._fixed())
         if "@" not in email or len(email) > 254:
@@ -82,45 +79,51 @@ class SignIn:
             await request_code(inst, email, rt.http, dev_id=rt.settings.dev_id)
         except VKError as e:
             return _page(lang, step=1, form=again, error=translate(lang, e.text), status=400)
-        self._sweep()
-        self._pending[rid] = Pending(inst, email, time.time() + PENDING_TTL)
-        return _page(lang, step=2, form=_step2(lang, rid, email), redirect=ctx["redirect_origin"])
+        pending = rt.sealer.seal(
+            "pending",
+            {"rid": _digest(rid), "inst": asdict(inst), "address": email, "n": secrets.token_hex(8)},
+            PENDING_TTL,
+        )
+        return _page(lang, step=2, form=_step2(lang, rid, pending, email), redirect=ctx["redirect_origin"])
 
-    async def _code(self, lang: str, rid: str, code: str, ctx: dict) -> Response:
+    async def _code(self, lang: str, rid: str, pending: str, code: str, ctx: dict) -> Response:
         rt = runtime()
         t = T[lang]
-        p = self._pending.get(rid)
-        if p is None or p.expires < time.time():
+        p = rt.sealer.open("pending", pending)
+        if p is None or p["rid"] != _digest(rid):
             return _page(lang, step=1, form=_step1(lang, rid, fixed=self._fixed()), error=t["code_expired"], status=400)
-        p.tries += 1
-        if p.tries > MAX_CODE_TRIES:
-            self._pending.pop(rid, None)
+        if self._count(p["n"], p["exp"]) > MAX_CODE_TRIES:
             return _page(lang, error=t["too_many_codes"], status=429)
+        inst = Installation(**p["inst"])
         try:
-            session = await finish_sign_in(p.installation, p.address, code, rt.http, dev_id=rt.settings.dev_id)
+            session = await finish_sign_in(inst, p["address"], code, rt.http, dev_id=rt.settings.dev_id)
         except VKError as e:
             return _page(
                 lang,
                 step=2,
-                form=_step2(lang, rid, p.address),
+                form=_step2(lang, rid, pending, p["address"]),
                 redirect=ctx["redirect_origin"],
                 error=translate(lang, e.text),
                 status=400,
             )
-        if self._pending.get(rid) is not p:
-            # the address step was submitted again while this code was checked: the newer one wins
-            return _page(lang, error=t["restarted"], status=409)
-        self._pending.pop(rid, None)
         try:
             redirect = await self.provider.complete_sign_in(rid, session)
         except LookupError:
             return _page(lang, error=t["expired"], status=410)
         return RedirectResponse(redirect, status_code=302)
 
-    def _sweep(self) -> None:
+    def _count(self, key: str, expires: float) -> int:
         now = time.time()
-        for k in [k for k, v in self._pending.items() if v.expires < now]:
-            del self._pending[k]
+        if len(self._tries) > 10_000:
+            for k in [k for k, (exp, _) in self._tries.items() if exp < now]:
+                del self._tries[k]
+        _, n = self._tries.get(key, (expires, 0))
+        self._tries[key] = (expires, n + 1)
+        return n + 1
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()[:24]
 
 
 async def static(request: Request) -> Response:
@@ -158,7 +161,6 @@ T: dict[str, dict[str, str]] = {
         "bad_email": "Type your work e-mail address.",
         "code_expired": "The code step has expired. Start again.",
         "too_many_codes": "Too many wrong codes. Connect again from your AI app.",
-        "restarted": "The sign-in was restarted in another tab. Use the latest code.",
     },
     "ru": {
         "title": "Вход в VK Teams",
@@ -181,7 +183,6 @@ T: dict[str, dict[str, str]] = {
         "bad_email": "Введите рабочую почту.",
         "code_expired": "Время ввода кода истекло. Начните заново.",
         "too_many_codes": "Слишком много неверных кодов. Подключитесь заново из ИИ-приложения.",
-        "restarted": "Вход начали заново в другой вкладке. Введите последний код.",
     },
 }
 
@@ -271,12 +272,13 @@ def _step1(lang: str, rid: str, server: str = "", email: str = "", fixed: str | 
   <p class="note">{t["note"]}</p>"""
 
 
-def _step2(lang: str, rid: str, email: str) -> str:
+def _step2(lang: str, rid: str, pending: str, email: str) -> str:
     t = T[lang]
     return f"""
   <p class="lede">{t["sent"].format(email=html.escape(email))}</p>
   <form method="post" action="/signin" novalidate>
     <input type="hidden" name="request" value="{html.escape(rid)}">
+    <input type="hidden" name="pending" value="{html.escape(pending)}">
     <input type="hidden" name="step" value="code">
     <label for="code">{t["code"]}</label>
     <input id="code" class="code" name="code" autocomplete="one-time-code" inputmode="text" maxlength="12"

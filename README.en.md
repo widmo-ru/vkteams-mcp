@@ -19,8 +19,8 @@ Context Protocol, is how an AI agent calls tools.
 
 Two principles:
 
-- **The smallest context for the agent.** 12 tools and about 4,100 tokens of catalogue by default
-  (14 tools and about 4,800 tokens with group administration on; counted with the `o200k_base`
+- **The smallest context for the agent.** 12 tools and about 4,200 tokens of catalogue by default
+  (14 tools and about 4,900 tokens with group administration on; counted with the `o200k_base`
   tokenizer). Each tool answers one question a person asks.
 - **Tools that carry the logic.** The server finds a chat or a person by name, turns an `@address`
   into a mention, picks the right one of four history and search methods, and moves files through
@@ -78,9 +78,9 @@ Every tool's contract: [`docs/requirements.md`](docs/requirements.md).
 | Rule | How |
 |---|---|
 | The model never sees the sign-in code | It is typed on this server's sign-in page only |
-| A leaked database without the secret gives little | VK Teams sessions and drafts are sealed with AES-GCM; our tokens are stored as hashes |
+| The server keeps nothing | The VK Teams session lives inside the client's tokens, sealed with AES-GCM and bound to the blob's kind: without the secret nobody can read or forge it, and a draft cannot pass for a token |
 | The sign-in page is not an attack tool | The server address must be the https name of a real VK Teams installation. The server checks every connection when it opens it, so by default no name can lead into a private network. The exception is `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1` for a server inside a company network; then pin the installation in `VKTEAMS_MCP_INSTALLATIONS`. Code e-mails are rate-limited |
-| OAuth 2.1 | Client registration, PKCE, one-hour access tokens, rotating refresh tokens; reusing an old one revokes the whole chain |
+| OAuth 2.1, without storage | Client registration, PKCE, one-hour access tokens, 30-day refresh tokens. Unlike OAuth 2.1, a refresh token is not single-use: a stolen one works until it expires. The defence is disconnecting, which ends the session in VK Teams and kills every token carrying it. A stolen refresh token renews itself: access lasts as long as the session, and only disconnecting ends it. If VK Teams is down at that moment, the disconnect returns an error and must be repeated: until VK Teams confirms, the tokens live. An authorization code lives five minutes; a replica remembers used codes (up to 10,000, until a restart), and any other replay also needs the PKCE verifier, which only the client holds |
 | Logs carry no content | A test runs a full message flow and fails if any text, address or `aimsid` appears in the logs |
 
 ## How it is tested
@@ -112,7 +112,7 @@ A reference for the client API, with the signature formulas: [`CHEATSHEET.md`](C
 ## Connect
 
 The server speaks Streamable HTTP with OAuth 2.1 (MCP authorization: client registration, PKCE,
-rotating refresh tokens). In Claude, add it as a custom connector with its `/mcp` address; in
+refresh tokens). In Claude, add it as a custom connector with its `/mcp` address; in
 Claude Code:
 
 ```sh
@@ -125,11 +125,11 @@ A ready image for linux/amd64 and linux/arm64 is in the GitHub Container Registr
 [CHANGELOG.md](CHANGELOG.md) and on the [releases](https://github.com/widmo-ru/vkteams-mcp/releases) page.
 
 ```sh
-openssl rand -base64 48 > vkteams-mcp.secret   # once; keep it: a new secret cannot open old sessions
-docker run -p 127.0.0.1:8000:8000 -v vkteams-data:/data \
+openssl rand -base64 48 > vkteams-mcp.secret   # once, the same for every replica; a new secret signs everyone out
+docker run -p 127.0.0.1:8000:8000 \
   -e VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org \
   -e VKTEAMS_MCP_SECRET="$(cat vkteams-mcp.secret)" \
-  ghcr.io/widmo-ru/vkteams-mcp:0.1.0
+  ghcr.io/widmo-ru/vkteams-mcp:0.2.0
 ```
 
 To build the image yourself: `docker build -t vkteams-mcp .`.
@@ -138,7 +138,6 @@ To build the image yourself: `docker build -t vkteams-mcp .`.
 |---|---|
 | `VKTEAMS_MCP_PUBLIC_URL` | The https address clients reach this server on (required) |
 | `VKTEAMS_MCP_SECRET` | At least 32 random characters; seals sessions and signs cursors (required; keep it) |
-| `VKTEAMS_MCP_DATABASE` | SQLite file (default `vkteams-mcp.sqlite`; `/data/…` in the image) |
 | `VKTEAMS_MCP_INSTALLATIONS` | Comma-separated VK Teams hosts this connector serves; with one host, the sign-in page asks only the e-mail |
 | `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS` | `1` when the server runs inside a company network next to its VK Teams |
 | `VKTEAMS_MCP_AREAS` | Areas to publish (default all but `chat_admin`) |
@@ -149,16 +148,25 @@ To build the image yourself: `docker build -t vkteams-mcp .`.
 The container speaks plain HTTP on port 8000. Put a reverse proxy that terminates TLS for
 `VKTEAMS_MCP_PUBLIC_URL` in front of it: OAuth and sign-in codes must travel over HTTPS.
 
-Where state lives:
+The server keeps nothing and has no database. What the next step needs travels in a sealed blob (AES-GCM,
+key from `VKTEAMS_MCP_SECRET`), carried by whoever needs it:
 
-| Where | What | After a restart |
+| What | Where it lives | How long |
 |---|---|---|
-| SQLite in `/data` | VK Teams sessions and drafts (sealed), hashes of our OAuth tokens, registered clients | kept: sign-ins and drafts survive |
-| process memory | each person's rate allowance, file links, the code step of the sign-in page, a one-minute chat list cache | lost |
-| the MCP client | its own access and refresh tokens only | up to the client |
+| the VK Teams session | inside the client's OAuth tokens; the client refreshes them itself, by the standard | access 1 hour, refresh 30 days |
+| the client's registration | inside its `client_id` | 10 years |
+| a draft | in the `draft` value `save_draft` returns | 24 hours |
+| the sign-in code step | in a hidden field of the sign-in form | 15 minutes |
+| a file link | in the link itself | 5 to 10 minutes |
+| the rate allowance | in each replica's memory | until a restart |
+| a fresh `aimsid` | in each replica's memory, as a cache | an hour |
 
-So the server runs as one replica. Two replicas would split the allowance between them and miss each
-other's file links.
+So any number of replicas can run; they share one secret. Sending the same draft again posts nothing twice:
+VK Teams merges messages with the same `localMsgId`, and the server checks scheduled text against the queue.
+Two exceptions: a scheduled poll or reply with a quote is queued again on a resend, and so may a scheduled draft
+sent at the same moment from two replicas.
+Each replica counts the rate allowance itself. Disconnecting ends the session in VK Teams, which kills every
+token carrying it; a single token cannot be revoked before it expires. Changing the secret signs everyone out.
 
 Most corporate VK Teams servers answer only inside the company network. Run the connector
 there, pinned to that one installation, with `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1`.

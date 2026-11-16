@@ -1,4 +1,5 @@
-"""The process: one Starlette app with the MCP endpoint, OAuth, the sign-in page and file links.
+"""The process: one Starlette app with the MCP endpoint, OAuth, the sign-in page and file links. It keeps
+no state between requests (`core.seal`), so any number of replicas sharing VKTEAMS_MCP_SECRET serve it.
 
 VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org VKTEAMS_MCP_SECRET=... vkteams-mcp
 """
@@ -16,13 +17,14 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from vkteams_mcp.api.client import VK
 from vkteams_mcp.api.egress import PublicOnlyTransport
+from vkteams_mcp.api.session import VKSession
 from vkteams_mcp.config import Settings
 from vkteams_mcp.core import context
 from vkteams_mcp.links import routes as link_routes
 from vkteams_mcp.links.links import Links
 from vkteams_mcp.oauth.provider import Provider
-from vkteams_mcp.oauth.store import Store
 from vkteams_mcp.server import VKServer
 from vkteams_mcp.signin import SignIn, static
 
@@ -30,16 +32,21 @@ log = logging.getLogger("vkteams_mcp")
 
 
 def build(settings: Settings, http: httpx.AsyncClient | None = None) -> tuple[Starlette, VKServer, Provider]:
-    store = Store(settings.database, settings.secret)
     if http is None:
         # Inside a company network the operator allows private addresses; everywhere else every connection is
         # checked when it is made, so a name that rebinds to a private address after sign-in is refused.
         transport = None if settings.policy.allow_private else PublicOnlyTransport()
         http = httpx.AsyncClient(timeout=30, transport=transport)
-    rt = context.Runtime(settings=settings, store=store, http=http)
-    rt.links = Links(settings.public_url)
+    rt = context.Runtime(settings=settings, http=http)
+    rt.links = Links(settings.public_url, rt.sealer)
     context.install(rt)
-    provider = Provider(store, public_url=settings.public_url)
+
+    async def end_session(session: VKSession) -> None:
+        await VK(session, rt.http).end()
+
+    provider = Provider(
+        rt.sealer, settings.secret, public_url=settings.public_url, latest=rt.latest, end_session=end_session
+    )
     auth = AuthSettings(
         issuer_url=settings.public_url,
         resource_server_url=f"{settings.public_url}/mcp",
@@ -83,11 +90,7 @@ def build(settings: Settings, http: httpx.AsyncClient | None = None) -> tuple[St
 
 
 def main() -> None:
-    import os
-
     import uvicorn
-
-    os.umask(0o077)  # the database and its WAL files are the operator's alone
 
     logging.basicConfig(
         level=logging.INFO, format='{"level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}', style="%"

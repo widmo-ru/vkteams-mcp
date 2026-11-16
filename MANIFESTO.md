@@ -65,14 +65,16 @@ We check every request shape against a live server (`docs/live-findings.md`).
     this server's sign-in page, never into a chat with the model and never into a tool.
     *Violation:* a tool argument or a model-visible text that carries a code, a password or a session.
 16. **One person per token, one installation per session.** An access token maps to exactly one
-    person on exactly one VK Teams server, chosen at sign-in and stored with the session. No tool takes
+    person on exactly one VK Teams server, chosen at sign-in and carried inside the token. No tool takes
     a server, a user or a session argument. *Violation:* any argument that selects another person,
     server or session.
 17. **Rights come from VK Teams.** We never widen what the person can do and never pretend to
     narrow it with a check VK Teams would not enforce.
-18. **Sessions are sealed.** We store VK Teams credentials (`a` token, session key, `aimsid`)
-    encrypted with a key from the environment, and our own tokens only as hashes. A leaked
-    database gives neither. *Violation:* a credential or token written in clear to disk or log.
+18. **The server keeps nothing.** The person's VK Teams credentials (`a` token, session key, `aimsid`)
+    travel inside their OAuth tokens, a draft inside its draft token, the sign-in step inside its form,
+    a file link inside its URL: each sealed with AES-GCM under a key from the environment and bound to
+    its kind. Any replica with the same secret serves any request. *Violation:* a database, a file or a
+    shared store holding a session or a draft; a credential in clear in a token, a URL or a log.
 
 ## III. A public server
 

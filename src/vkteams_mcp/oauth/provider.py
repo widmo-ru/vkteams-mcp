@@ -1,17 +1,24 @@
-"""OAuth 2.1 authorization server for MCP clients, in front of a VK Teams sign-in.
+"""OAuth 2.1 authorization server for MCP clients, in front of a VK Teams sign-in. It stores nothing.
 
-`authorize` stores the client's parameters and sends the browser to our sign-in page; the page
-proves the person by the code VK Teams e-mails (`api.login`) and calls `complete_sign_in`, which
-issues a one-time authorization code back to the client. PKCE is verified by the SDK's token
-handler. Access tokens live one hour; refresh tokens rotate, and a refresh retires the whole
-previous pair (one "family" per sign-in).
+Every artefact of the flow is a sealed blob (`core.seal`) that carries what the next step needs:
+
+| Artefact | Carries | Lives |
+|---|---|---|
+| `client_id` | the client's registration | as long as the client keeps it |
+| sign-in request | the client and its authorization parameters | 15 minutes, in the sign-in URL |
+| authorization code | the parameters and the person's VK Teams session | 5 minutes |
+| access token | the session | 1 hour |
+| refresh token | the session | 30 days |
+
+The client refreshes its tokens itself, by the standard; a refresh hands back new tokens with the
+freshest session this replica knows. Any number of replicas serve the same tokens if they share the
+secret. Revoking a token ends the VK Teams session itself, which kills every token that carries it.
 """
 
 from __future__ import annotations
 
-import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from urllib.parse import urlsplit
 
 from mcp.server.auth.provider import (
@@ -25,36 +32,58 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
 
 from vkteams_mcp.api.session import VKSession
-from vkteams_mcp.oauth.store import Store
+from vkteams_mcp.core.seal import Sealer, person_id
 
 ACCESS_TTL = 3600
-REFRESH_TTL = 90 * 24 * 3600
+REFRESH_TTL = 30 * 24 * 3600
 CODE_TTL = 300
 SIGN_IN_TTL = 15 * 60
+CLIENT_TTL = 10 * 365 * 24 * 3600
+USED_CODES_MAX = 10_000
 
 
 class Provider:
-    def __init__(self, store: Store, *, public_url: str, clock: Callable[[], float] = time.time) -> None:
-        self.store = store
+    def __init__(
+        self,
+        sealer: Sealer,
+        secret: str,
+        *,
+        public_url: str,
+        latest: Callable[[str, VKSession], VKSession] = lambda _p, s: s,
+        end_session: Callable[[VKSession], Awaitable[None]] | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.sealer = sealer
+        self._secret = secret
         self.public_url = public_url.rstrip("/")
+        self._latest = latest  # the freshest session this replica has seen for a person
+        self._end_session = end_session
         self._clock = clock
+        # A code is single-use per replica. Across replicas a second exchange needs the code and the PKCE
+        # verifier, which only the client holds, within the code's five minutes.
+        self._used_codes: dict[str, float] = {}
+
+    def person(self, session: VKSession) -> str:
+        return person_id(session.host, session.login, self._secret)
 
     # ---------------------------------------------------------------- clients
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        info = self.store.client(client_id)
-        return OAuthClientInformationFull.model_validate_json(info) if info else None
+        body = self.sealer.open("client", client_id)
+        if body is None:
+            return None
+        return OAuthClientInformationFull.model_validate({**body["info"], "client_id": client_id})
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        self.store.save_client(client_info.client_id, client_info.model_dump_json(), self._clock())
+        """The registration becomes the client id: the SDK answers with this same object."""
+        info = client_info.model_dump(mode="json", exclude={"client_id"}, exclude_none=True)
+        client_info.client_id = self.sealer.seal("client", {"info": info}, CLIENT_TTL)
 
     # ---------------------------------------------------------------- authorize → sign-in page
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
-        self.store.purge(self._clock())  # expired requests, codes, tokens and drafts do not pile up
-        request_id = secrets.token_urlsafe(32)
-        self.store.save_request(
-            request_id,
-            client.client_id,
+        request = self.sealer.seal(
+            "signin",
             {
+                "client_id": client.client_id,
                 "state": params.state,
                 "scopes": params.scopes or [],
                 "code_challenge": params.code_challenge,
@@ -62,144 +91,112 @@ class Provider:
                 "redirect_uri_provided_explicitly": params.redirect_uri_provided_explicitly,
                 "resource": params.resource,
             },
-            self._clock() + SIGN_IN_TTL,
+            SIGN_IN_TTL,
         )
-        return f"{self.public_url}/signin?request={request_id}"
+        return f"{self.public_url}/signin?request={request}"
+
+    def _request(self, request_id: str) -> dict | None:
+        return self.sealer.open("signin", request_id)
 
     async def sign_in_context(self, request_id: str) -> dict | None:
-        """What the sign-in page shows and allows: the client's name and where it redirects."""
-        info = self.store.request_info(request_id, self._clock())
-        if info is None:
+        """What the sign-in page shows and allows: where the browser goes back to."""
+        p = self._request(request_id)
+        if p is None:
             return None
-        client_id, p = info
-        client = await self.get_client(client_id)
         u = urlsplit(p["redirect_uri"])
-        return {
-            "client_name": (client.client_name if client else None) or "An AI app",
-            "redirect_origin": f"{u.scheme}://{u.netloc}",
-        }
-
-    def sign_in_pending(self, request_id: str) -> bool:
-        return self.store.peek_request(request_id, self._clock())
+        return {"redirect_origin": f"{u.scheme}://{u.netloc}"}
 
     async def complete_sign_in(self, request_id: str, session: VKSession) -> str:
-        """The person proved themselves: seal their session and hand the client a one-time code."""
-        taken = self.store.take_request(request_id, self._clock())
-        if taken is None:
-            raise LookupError("sign-in request unknown, used or expired")
-        client_id, p = taken
-        person = self.store.save_session(session)
-        code = secrets.token_urlsafe(32)
-        self.store.save_code(code, client_id, person, p, self._clock() + CODE_TTL)
+        """The person proved themselves: hand the client a one-time code that carries their session."""
+        p = self._request(request_id)
+        if p is None:
+            raise LookupError("sign-in request unknown or expired")
+        code = self.sealer.seal("code", {**p, "s": session.to_json()}, CODE_TTL)
         return construct_redirect_uri(p["redirect_uri"], code=code, state=p["state"])
 
     # ---------------------------------------------------------------- codes
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> AuthorizationCode | None:
-        row = self.store.code(authorization_code)
-        if row is None:
-            return None
-        client_id, person, p, expires = row
-        if client_id != client.client_id or expires < self._clock():
+        p = self.sealer.open("code", authorization_code)
+        if p is None or p["client_id"] != client.client_id or authorization_code in self._used_codes:
             return None
         return AuthorizationCode(
             code=authorization_code,
             scopes=p["scopes"],
-            expires_at=expires,
-            client_id=client_id,
+            expires_at=p["exp"],
+            client_id=client.client_id,
             code_challenge=p["code_challenge"],
             redirect_uri=AnyUrl(p["redirect_uri"]),
             redirect_uri_provided_explicitly=p["redirect_uri_provided_explicitly"],
             resource=p["resource"],
-            subject=person,
+            subject=p["s"],
         )
 
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        self.store.delete_code(authorization_code.code)
-        return self._issue(
-            client.client_id,
-            authorization_code.subject or "",
-            authorization_code.scopes,
-            authorization_code.resource,
-            family=secrets.token_hex(16),
-        )
+        now = self._clock()
+        for k in [k for k, exp in self._used_codes.items() if exp < now]:
+            del self._used_codes[k]
+        while len(self._used_codes) >= USED_CODES_MAX:  # full of live codes: forget the oldest, keep recording
+            del self._used_codes[next(iter(self._used_codes))]
+        self._used_codes[authorization_code.code] = authorization_code.expires_at
+        session = VKSession.from_json(authorization_code.subject or "")
+        return self._issue(client.client_id, session, authorization_code.scopes, authorization_code.resource)
 
     # ---------------------------------------------------------------- tokens
-    def _issue(self, client_id: str, person: str, scopes: list[str], resource: str | None, family: str) -> OAuthToken:
-        now = self._clock()
-        access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-        self.store.save_token(access, "access", client_id, person, family, scopes, resource, now + ACCESS_TTL)
-        self.store.save_token(refresh, "refresh", client_id, person, family, scopes, resource, now + REFRESH_TTL)
+    def _issue(self, client_id: str, session: VKSession, scopes: list[str], resource: str | None) -> OAuthToken:
+        body = {"client_id": client_id, "scopes": scopes, "resource": resource, "s": session.to_json()}
         return OAuthToken(
-            access_token=access,
+            access_token=self.sealer.seal("access", body, ACCESS_TTL),
             token_type="Bearer",
             expires_in=ACCESS_TTL,
-            refresh_token=refresh,
+            refresh_token=self.sealer.seal("refresh", body, REFRESH_TTL),
             scope=" ".join(scopes) or None,
         )
 
     async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> RefreshToken | None:
-        used = self.store.token(refresh_token, "used_refresh")
-        if used is not None and used["client_id"] == client.client_id:
-            # A refresh token used twice was stolen, or its client is broken: either way the whole chain
-            # goes, so a thief who refreshed first loses what they got (OAuth 2.1 refresh token reuse).
-            self.store.revoke_family(used["family"])
-            return None
-        row = self.store.token(refresh_token, "refresh")
-        if row is None or row["client_id"] != client.client_id or row["expires"] < self._clock():
+        p = self.sealer.open("refresh", refresh_token)
+        if p is None or p["client_id"] != client.client_id:
             return None
         return RefreshToken(
             token=refresh_token,
-            client_id=row["client_id"],
-            scopes=row["scopes"],
-            expires_at=int(row["expires"]),
-            resource=row["resource"],
-            subject=row["person_id"],
+            client_id=client.client_id,
+            scopes=p["scopes"],
+            expires_at=p["exp"],
+            resource=p["resource"],
+            subject=p["s"],
         )
 
     async def exchange_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]
     ) -> OAuthToken:
-        row = self.store.token(refresh_token.token, "refresh")
-        if row is None:
-            raise LookupError("refresh token unknown")
-        # The old pair dies, the chain keeps its family, and the used refresh token is remembered so that a
-        # second use of it revokes the chain.
-        self.store.revoke_family(row["family"])
-        self.store.save_token(
-            refresh_token.token,
-            "used_refresh",
-            row["client_id"],
-            row["person_id"],
-            row["family"],
-            row["scopes"],
-            row["resource"],
-            self._clock() + REFRESH_TTL,
-        )
-        return self._issue(
-            client.client_id, row["person_id"], scopes or row["scopes"], row["resource"], family=row["family"]
-        )
+        session = VKSession.from_json(refresh_token.subject or "")
+        session = self._latest(self.person(session), session)
+        return self._issue(client.client_id, session, scopes or refresh_token.scopes, refresh_token.resource)
+
+    def session_of(self, access_token: str) -> VKSession | None:
+        """The VK Teams session an access token carries, or None for anything not a live access token."""
+        p = self.sealer.open("access", access_token)
+        return VKSession.from_json(p["s"]) if p else None
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        row = self.store.token(token, "access")
-        if row is None or row["expires"] < self._clock():
+        p = self.sealer.open("access", token)
+        if p is None:
             return None
-        if self.store.load_session(row["person_id"]) is None:
-            return None
+        session = VKSession.from_json(p["s"])
         return AccessToken(
             token=token,
-            client_id=row["client_id"],
-            scopes=row["scopes"],
-            expires_at=int(row["expires"]),
-            resource=row["resource"],
-            subject=row["person_id"],
+            client_id=p["client_id"],
+            scopes=p["scopes"],
+            expires_at=p["exp"],
+            resource=p["resource"],
+            subject=self.person(session),
         )
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
-        for kind in ("access", "refresh"):
-            row = self.store.token(token.token, kind)
-            if row is not None:
-                self.store.revoke_family(row["family"])
+        """Disconnect: end the VK Teams session the token carries, so no token carrying it works again."""
+        p = self.sealer.open("access", token.token) or self.sealer.open("refresh", token.token)
+        if p is not None and self._end_session is not None:
+            await self._end_session(VKSession.from_json(p["s"]))

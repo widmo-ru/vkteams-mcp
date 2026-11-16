@@ -1,6 +1,6 @@
 """One person's VK Teams session on one installation, and the WIM request signature.
 
-The session is what the store seals: the long-term token `a` and the session key renew `aimsid`
+The session travels sealed inside the OAuth tokens: the long-term token `a` and the session key renew `aimsid`
 without a new code, so all three are secrets.
 """
 

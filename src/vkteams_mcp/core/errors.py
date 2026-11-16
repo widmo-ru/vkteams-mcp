@@ -38,10 +38,9 @@ MESSAGES: dict[str, str] = {
         "at once, then one every {every} seconds. Wait {seconds}. {then}"
     ),
     "not_own_message": "Only your own messages can be edited or deleted. Nothing was changed.",
-    "no_draft": "There is no draft saved here for that chat. Save one with save_draft first. Nothing was sent.",
-    "draft_changed": (
-        "The draft in that chat is not the one saved here: it was edited or replaced. Show it with "
-        "get_chat, then save it again with save_draft. Nothing was sent."
+    "no_draft": (
+        "That is not a draft save_draft made for this chat, or it is older than 24 hours. Save it again with "
+        "save_draft. Nothing was sent."
     ),
     "too_large": "It is too large: {size} against a limit of {limit}. Nothing was done.",
     "invalid": "{reason}",

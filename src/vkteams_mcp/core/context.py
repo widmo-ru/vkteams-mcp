@@ -1,7 +1,9 @@
 """What one tool call runs with: the runtime of the server, and the person behind the token.
 
-`call()` turns the access token into the person's VK Teams session. A tool never sees a token, a
-host or a session argument (manifesto rule 16): the person is whoever the token belongs to.
+`call()` opens the access token and takes the person's VK Teams session out of it: the server keeps no
+session of its own. A tool never sees a token, a host or a session argument (manifesto rule 16): the
+person is whoever the token belongs to. When VK Teams renews a short `aimsid`, this replica remembers
+the fresh one for an hour so the next calls do not renew again; the next token refresh carries it.
 """
 
 from __future__ import annotations
@@ -18,31 +20,52 @@ import httpx
 from mcp.server.auth.middleware.auth_context import get_access_token
 
 from vkteams_mcp.api.client import VK
+from vkteams_mcp.api.session import VKSession
 from vkteams_mcp.config import Settings
 from vkteams_mcp.core.cursor import Cursors
 from vkteams_mcp.core.errors import VKError
 from vkteams_mcp.core.guard import Guard
-from vkteams_mcp.oauth.store import Store
+from vkteams_mcp.core.seal import Sealer, person_id
+
+FRESH_TTL = 3600
+FRESH_MAX = 10_000
 
 
 @dataclass
 class Runtime:
     settings: Settings
-    store: Store
     http: httpx.AsyncClient
     guard: Guard = field(default_factory=Guard)
     clock: Callable[[], float] = time.time
     cursors: Cursors = field(init=False)
+    sealer: Sealer = field(init=False)
+    fresh: dict[str, tuple[float, VKSession]] = field(default_factory=dict)  # a cache, not a store
     links: Any = None  # links.Links, set by the app
     resolve: Callable[[str], list[str]] | None = None  # DNS for installation checks; None = the system's
 
     def __post_init__(self) -> None:
         self.cursors = Cursors(hashlib.sha256(b"cursor-key\n" + self.settings.secret.encode()).digest())
+        self.sealer = Sealer(self.settings.secret, self.clock)
+
+    def person(self, session: VKSession) -> str:
+        return person_id(session.host, session.login, self.settings.secret)
+
+    def latest(self, person: str, session: VKSession) -> VKSession:
+        """The freshest session this replica has seen for the person, else the one given."""
+        hit = self.fresh.get(person)
+        return hit[1] if hit and hit[0] > self.clock() and hit[1].token_a == session.token_a else session
+
+    def remember(self, session: VKSession) -> None:
+        now = self.clock()
+        if len(self.fresh) >= FRESH_MAX:
+            for k in [k for k, (exp, _) in self.fresh.items() if exp < now] or list(self.fresh)[: FRESH_MAX // 10]:
+                del self.fresh[k]
+        self.fresh[self.person(session)] = (now + FRESH_TTL, session)
 
 
 _RUNTIME: Runtime | None = None
 # Set by tests (and nothing else) to act as a person without an HTTP request.
-person_override: ContextVar[str | None] = ContextVar("person_override", default=None)
+session_override: ContextVar[VKSession | None] = ContextVar("session_override", default=None)
 
 
 def install(rt: Runtime) -> None:
@@ -87,17 +110,17 @@ class Call:
 @asynccontextmanager
 async def call(tool: str) -> AsyncIterator[Call]:
     rt = runtime()
-    person = person_override.get()
-    if person is None:
+    session = session_override.get()
+    if session is None:
         token = get_access_token()
-        person = token.subject if token else None
-    if not person:
-        raise VKError("reconnect")
-    session = rt.store.load_session(person)
+        body = rt.sealer.open("access", token.token) if token else None
+        session = VKSession.from_json(body["s"]) if body else None
     if session is None:
         raise VKError("reconnect")
+    person = rt.person(session)
+    session = rt.latest(person, session)
 
-    async def saved(s) -> None:
-        rt.store.save_session(s)
+    async def renewed(s: VKSession) -> None:
+        rt.remember(s)
 
-    yield Call(tool=tool, person=person, vk=VK(session, rt.http, on_renew=saved), rt=rt)
+    yield Call(tool=tool, person=person, vk=VK(session, rt.http, on_renew=renewed), rt=rt)
