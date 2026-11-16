@@ -84,6 +84,12 @@ MUTATIONS = [
         ["tests/unit/test_signin.py::test_code_requests_are_limited"],
     ),
     (
+        "an unknown client gets a page, not JSON",
+        "signin.py",
+        [('if message["type"] == "http.response.start" and message["status"] == 400:', "if False:")],
+        ["tests/unit/test_http.py::test_an_unknown_client_gets_a_page_that_says_to_connect_again"],
+    ),
+    (
         "finishing never resends a code",
         "api/login.py",
         [('"pwd": code}', '"pwd": code, "tokenType": "otp_via_email"}')],

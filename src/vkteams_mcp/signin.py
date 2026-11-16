@@ -161,6 +161,11 @@ T: dict[str, dict[str, str]] = {
         "bad_email": "Type your work e-mail address.",
         "code_expired": "The code step has expired. Start again.",
         "too_many_codes": "Too many wrong codes. Connect again from your AI app.",
+        "h1_unknown": "Connect again",
+        "unknown_client": (
+            "This server no longer knows your AI app's connection: the server was updated or its key changed. "
+            "In your AI app, clear the authorization for this connector and connect again."
+        ),
     },
     "ru": {
         "title": "Вход в VK Teams",
@@ -183,6 +188,11 @@ T: dict[str, dict[str, str]] = {
         "bad_email": "Введите рабочую почту.",
         "code_expired": "Время ввода кода истекло. Начните заново.",
         "too_many_codes": "Слишком много неверных кодов. Подключитесь заново из ИИ-приложения.",
+        "h1_unknown": "Подключитесь заново",
+        "unknown_client": (
+            "Сервер больше не узнаёт подключение вашего ИИ-приложения: его обновили или сменили ключ. "
+            "В ИИ-приложении сбросьте авторизацию этого коннектора и подключитесь заново."
+        ),
     },
 }
 
@@ -355,6 +365,7 @@ def _page(
     redirect: str | None = None,
     error: str | None = None,
     status: int = 200,
+    heading: str | None = None,
 ) -> HTMLResponse:
     t = T[lang]
     progress = (
@@ -363,7 +374,7 @@ def _page(
         if step
         else ""
     )
-    h1 = t["h1_code"] if step == 2 else t["h1"]
+    h1 = heading or (t["h1_code"] if step == 2 else t["h1"])
     err = f'<p class="error" id="error" role="alert">{html.escape(error)}</p>' if error else ""
     body = f"""<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -392,3 +403,39 @@ def _page(
             "Vary": "Accept-Language",
         },
     )
+
+
+class AuthorizeErrorPage:
+    """ASGI wrapper around the app: the one answer `/authorize` gives straight to the browser, an error it
+    cannot send back to an unknown client or an unverified redirect address, becomes a page in the person's
+    language instead of JSON. Redirects and every other path pass through untouched."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope["path"].rstrip("/") != "/authorize":
+            await self.app(scope, receive, send)
+            return
+        replaced = False
+
+        async def guard(message) -> None:
+            nonlocal replaced
+            if message["type"] == "http.response.start" and message["status"] == 400:
+                replaced = True
+                lang = pick_lang(_header(scope, b"accept-language"))
+                t = T[lang]
+                page = _page(lang, heading=t["h1_unknown"], error=t["unknown_client"], status=400)
+                await page(scope, receive, send)
+                return
+            if not replaced:
+                await send(message)
+
+        await self.app(scope, receive, guard)
+
+
+def _header(scope, name: bytes) -> str:
+    for k, v in scope.get("headers", []):
+        if k.lower() == name:
+            return v.decode("latin-1")
+    return ""

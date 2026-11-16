@@ -332,3 +332,42 @@ async def test_the_sign_in_page_speaks_the_browser_language_and_names_no_client(
             headers={"Accept-Language": "ru"},
         )
         assert refused.status_code == 400 and "Введите адрес своего сервера VK Teams" in refused.text
+
+
+async def test_an_unknown_client_gets_a_page_that_says_to_connect_again(app):
+    """A registration the server no longer knows (an old version, a new secret) is a dead end for the
+    browser: the client cannot be told, so the person is, in their language, with the way out."""
+    q = {
+        "response_type": "code",
+        "client_id": "75ba0188-bbf9-4a0c-8798-114ed70a33d2",
+        "redirect_uri": CB,
+        "code_challenge": CHALLENGE,
+        "code_challenge_method": "S256",
+        "state": "xyz",
+    }
+    async with serve(app) as web:
+        ru = await web.get("/authorize", params=q, headers={"Accept-Language": "ru-RU,ru;q=0.9"})
+        en = await web.get("/authorize", params=q, headers={"Accept-Language": "en"})
+        bare = await web.post("/authorize", data={**q, "client_id": ""})
+    for r in (ru, en, bare):
+        assert r.status_code == 400 and r.headers["content-type"].startswith("text/html")
+        assert "location" not in r.headers and r.headers["cache-control"] == "no-store"
+        assert "75ba0188" not in r.text and "{" not in r.text.split("<style>")[0]
+    assert '<html lang="ru">' in ru.text and "Подключитесь заново" in ru.text
+    assert '<html lang="en">' in en.text and "connect again" in en.text
+
+
+async def test_a_known_client_with_a_foreign_redirect_still_gets_no_redirect(app):
+    async with serve(app) as web:
+        cid = await register(web)
+        r = await web.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": cid,
+                "redirect_uri": "https://evil.example.net/cb",
+                "code_challenge": CHALLENGE,
+                "code_challenge_method": "S256",
+            },
+        )
+    assert r.status_code == 400 and "location" not in r.headers and "evil.example.net" not in r.text

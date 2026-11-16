@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 (2026-11-16)
+
+- A client the server no longer knows (registered with 0.1, or before the secret changed) used to get
+  raw JSON from `/authorize`. The browser now shows a page in the person's language that says to clear
+  the connector's authorization in the AI app and connect again. Redirects are unchanged.
+
 ## 0.2.0 (2026-11-16)
 
 The server keeps nothing: any number of replicas sharing one secret serve the same clients.

@@ -26,7 +26,7 @@ from vkteams_mcp.links import routes as link_routes
 from vkteams_mcp.links.links import Links
 from vkteams_mcp.oauth.provider import Provider
 from vkteams_mcp.server import VKServer
-from vkteams_mcp.signin import SignIn, static
+from vkteams_mcp.signin import AuthorizeErrorPage, SignIn, static
 
 log = logging.getLogger("vkteams_mcp")
 
@@ -86,6 +86,7 @@ def build(settings: Settings, http: httpx.AsyncClient | None = None) -> tuple[St
                 await http.aclose()
 
     app.router.lifespan_context = lifespan
+    app.add_middleware(AuthorizeErrorPage)
     return app, server, provider
 
 

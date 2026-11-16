@@ -128,7 +128,7 @@ openssl rand -base64 48 > vkteams-mcp.secret   # один раз, одинако
 docker run -p 127.0.0.1:8000:8000 \
   -e VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org \
   -e VKTEAMS_MCP_SECRET="$(cat vkteams-mcp.secret)" \
-  ghcr.io/widmo-ru/vkteams-mcp:0.2.0
+  ghcr.io/widmo-ru/vkteams-mcp:0.2.1
 ```
 
 Собрать образ самому: `docker build -t vkteams-mcp .`.
@@ -136,7 +136,7 @@ docker run -p 127.0.0.1:8000:8000 \
 | Переменная | Значение |
 |---|---|
 | `VKTEAMS_MCP_PUBLIC_URL` | https-адрес, по которому клиенты видят сервер (обязательно) |
-| `VKTEAMS_MCP_SECRET` | Не меньше 32 случайных символов: шифрует сессии и подписывает курсоры (обязательно, храните) |
+| `VKTEAMS_MCP_SECRET` | Не меньше 32 случайных символов: шифрует сессии и подписывает курсоры (обязательно, храните). Новый секрет отключает всех: при следующем входе браузер покажет страницу «Подключитесь заново»: в ИИ-приложении сбросить авторизацию коннектора и подключиться снова |
 | `VKTEAMS_MCP_INSTALLATIONS` | Хосты VK Teams через запятую, которые обслуживает коннектор. С одним хостом страница входа спрашивает только почту |
 | `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS` | `1`, если сервер стоит внутри сети компании рядом с её VK Teams |
 | `VKTEAMS_MCP_AREAS` | Какие области включить (по умолчанию все, кроме `chat_admin`) |

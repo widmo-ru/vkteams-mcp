@@ -129,7 +129,7 @@ openssl rand -base64 48 > vkteams-mcp.secret   # once, the same for every replic
 docker run -p 127.0.0.1:8000:8000 \
   -e VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org \
   -e VKTEAMS_MCP_SECRET="$(cat vkteams-mcp.secret)" \
-  ghcr.io/widmo-ru/vkteams-mcp:0.2.0
+  ghcr.io/widmo-ru/vkteams-mcp:0.2.1
 ```
 
 To build the image yourself: `docker build -t vkteams-mcp .`.
@@ -137,7 +137,7 @@ To build the image yourself: `docker build -t vkteams-mcp .`.
 | Variable | Meaning |
 |---|---|
 | `VKTEAMS_MCP_PUBLIC_URL` | The https address clients reach this server on (required) |
-| `VKTEAMS_MCP_SECRET` | At least 32 random characters; seals sessions and signs cursors (required; keep it) |
+| `VKTEAMS_MCP_SECRET` | At least 32 random characters; seals sessions and signs cursors (required; keep it). A new secret disconnects everyone: on the next sign-in the browser shows a page saying to clear the connector's authorization in the AI app and connect again |
 | `VKTEAMS_MCP_INSTALLATIONS` | Comma-separated VK Teams hosts this connector serves; with one host, the sign-in page asks only the e-mail |
 | `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS` | `1` when the server runs inside a company network next to its VK Teams |
 | `VKTEAMS_MCP_AREAS` | Areas to publish (default all but `chat_admin`) |
