@@ -13,6 +13,8 @@ D21 an edit is not held to the 10 000-character limit that a new message is.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 from conftest import GROUP, call_tool, history_like_vk, ok
 
@@ -244,3 +246,133 @@ async def test_a_poll_answer_of_invisible_characters_is_refused(server, chats, b
 async def test_a_message_of_invisible_characters_is_empty(server, chats, blank):
     r = await call_tool(server, "save_draft", {"chat": GROUP, "text": blank})
     assert r.is_error
+
+
+# ---------------------------------------------------------------- round 4 (re-check of eebc16c on the stateless server)
+# D25 a button's print is 24 bits of an unkeyed sha256 over text and data the bot chooses: a bot finds a
+#     replacement with the same print in ~26 s on a laptop, and the edited button is pressed.
+# D26 an edit to invisible characters only is accepted: live, the message became blank.
+# D27 `@[ address ]` with spaces is not counted by the mention cap, but VK Teams reads it as a mention:
+#     live, an edit to 21 of them recorded 21 mentions; save_draft keeps them and does not list them.
+
+# Found offline: sha256("Отменить\ncancel\n")[:6] == sha256("Удалить бота\ndelete-43070496\n")[:6] == "74a930"
+_CANCEL = {"text": "Отменить", "callbackData": "cancel"}
+_DELETE = {"text": "Удалить бота", "callbackData": "delete-43070496"}
+
+
+async def test_a_bot_cannot_swap_a_button_for_one_with_the_same_print(server, chats):
+    def unkeyed(b: dict) -> str:  # the print as it was in 0.2.1
+        return hashlib.sha256(f"{b['text']}\n{b['callbackData']}\n".encode()).hexdigest()[:6]
+
+    assert unkeyed(_CANCEL) == unkeyed(_DELETE) == "74a930"  # the collision the bot found offline
+    shown = button_token(1, _CANCEL)
+    msg = _bot_message("x")
+    msg["inlineKeyboardMarkup"] = [[_DELETE]]
+    chats.rapi("getHistory", history_like_vk([msg]))
+    chats.rapi("getBotCallbackAnswer", ok())
+    r = await call_tool(
+        server,
+        "respond_to_bot",
+        {"bot": "70001", "action": "press", "message": "9", "button": shown, "user_confirmed": True},
+    )
+    assert r.is_error and chats.writes() == []
+
+
+@pytest.mark.parametrize("blank", ["​", "﻿ ⁠"])
+async def test_an_edit_to_invisible_characters_is_refused(server, chats, blank):
+    chats.rapi("getHistory", history_like_vk([{"msgId": 5, "time": 1, "outgoing": True, "text": "mine"}]))
+    r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "5", "action": "edit", "text": blank, "user_confirmed": True},
+    )
+    assert r.is_error and chats.writes() == []
+
+
+_SPACED = " ".join(f"@[ p{i}@example.com ]" for i in range(21))
+
+
+async def test_spaced_mentions_in_a_draft_are_held_to_the_people_cap(server, chats):
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": _SPACED})
+    assert r.is_error
+
+
+async def test_spaced_mentions_in_an_edit_are_held_to_the_people_cap(server, chats):
+    chats.rapi("getHistory", history_like_vk([{"msgId": 5, "time": 1, "outgoing": True, "text": "mine"}]))
+    r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "5", "action": "edit", "text": _SPACED, "user_confirmed": True},
+    )
+    assert r.is_error and chats.writes() == []
+
+
+async def test_a_spaced_mention_is_listed_in_the_preview(server, chats):
+    r = await call_tool(server, "save_draft", {"chat": GROUP, "text": "see @[ ann@example.com ]"})
+    assert not r.is_error and "ann@example.com" in (r.structured_content.get("mentions") or []), r.structured_content
+
+
+async def test_an_address_in_an_edit_becomes_a_mention_as_in_a_draft(server, chats):
+    """R20: the same text means the same thing in save_draft and in an edit."""
+    chats.rapi("getHistory", history_like_vk([{"msgId": 5, "time": 1, "outgoing": True, "text": "mine"}]))
+    chats.rapi("message/send", ok({"msgId": "5"}))
+    r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "5", "action": "edit", "text": "ask @ann@example.com", "user_confirmed": True},
+    )
+    assert not r.is_error, r.content
+    sent = [w for w in chats.writes() if w.path.endswith("/message/send")]
+    assert sent and "@[ann@example.com]" in str(sent[-1].json), sent
+
+
+async def test_inline_addresses_in_an_edit_are_held_to_the_people_cap(server, chats):
+    chats.rapi("getHistory", history_like_vk([{"msgId": 5, "time": 1, "outgoing": True, "text": "mine"}]))
+    text = " ".join(f"@p{i}@example.com" for i in range(21))
+    r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "5", "action": "edit", "text": text, "user_confirmed": True},
+    )
+    assert r.is_error and chats.writes() == []
+
+
+@pytest.mark.parametrize("blank", ["ㅤ", "⠀", "ᅟᅠ", "ﾠ ㅤ"])
+async def test_blank_letters_are_invisible_in_a_draft_and_an_edit(server, chats, blank):
+    """Hangul fillers and the blank Braille pattern are letters and symbols by category and show nothing."""
+    assert (await call_tool(server, "save_draft", {"chat": GROUP, "text": blank})).is_error
+    chats.rapi("getHistory", history_like_vk([{"msgId": 5, "time": 1, "outgoing": True, "text": "mine"}]))
+    r = await call_tool(
+        server,
+        "update_message",
+        {"chat": GROUP, "message": "5", "action": "edit", "text": blank, "user_confirmed": True},
+    )
+    assert r.is_error and chats.writes() == []
+
+
+async def test_moving_text_between_a_buttons_fields_changes_its_print(server, chats):
+    """The print reads the fields one by one: shifting a line from the label into the data is another button."""
+    shown = button_token(1, {"text": "Cancel", "callbackData": "Delete\npayload"})
+    msg = _bot_message("x")
+    msg["inlineKeyboardMarkup"] = [[{"text": "Cancel\nDelete", "callbackData": "payload"}]]
+    chats.rapi("getHistory", history_like_vk([msg]))
+    chats.rapi("getBotCallbackAnswer", ok())
+    r = await call_tool(
+        server,
+        "respond_to_bot",
+        {"bot": "70001", "action": "press", "message": "9", "button": shown, "user_confirmed": True},
+    )
+    assert r.is_error and chats.writes() == []
+
+
+def test_a_buttons_print_depends_on_the_servers_secret(server, monkeypatch):
+    """D25: without the secret nobody can compute a print, so a bot cannot search for a colliding button."""
+    import dataclasses
+
+    from vkteams_mcp.core import context
+
+    rt = context.runtime()
+    before = [button_token(1, {"text": f"b{i}", "callbackData": str(i)}) for i in range(8)]
+    monkeypatch.setattr(rt, "settings", dataclasses.replace(rt.settings, secret="another secret " * 4))
+    after = [button_token(1, {"text": f"b{i}", "callbackData": str(i)}) for i in range(8)]
+    assert all(a != b for a, b in zip(before, after, strict=True))

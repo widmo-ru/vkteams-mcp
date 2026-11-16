@@ -8,12 +8,15 @@ channel is `<n>@chat.agent`; a thread is a chat of its own.
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import re
 import time
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from vkteams_mcp.core import context
 from vkteams_mcp.core.content import content_block, content_line, name
 from vkteams_mcp.core.context import Call
 from vkteams_mcp.core.errors import VKError, invalid
@@ -246,9 +249,13 @@ BUTTON_PATTERN = r"^\d{1,2}\.[0-9a-f]{6}$"
 
 def button_token(i: int, b: dict) -> str:
     """A button's number and a short print of what it is. A bot can edit its keyboard after the agent read it;
-    the print makes the same number on a changed keyboard a refusal instead of a press of another button."""
-    seen = f"{b.get('text', '')}\n{b.get('callbackData', '')}\n{b.get('url', '')}".encode()
-    return f"{i}.{hashlib.sha256(seen).hexdigest()[:6]}"
+    the print makes the same number on a changed keyboard a refusal instead of a press of another button.
+    The print is keyed by the server's secret: the bot chooses the text and data, and an unkeyed 24-bit print
+    let it find a different button with the same print in under a minute (QA D25)."""
+    # each field encoded on its own: joined by newlines, a line moved from the label into the data kept the print
+    seen = json.dumps([str(b.get(k, "")) for k in ("text", "callbackData", "url")], ensure_ascii=False).encode()
+    key = hashlib.sha256(b"button-key\n" + context.runtime().settings.secret.encode()).digest()
+    return f"{i}.{hmac.new(key, seen, hashlib.sha256).hexdigest()[:6]}"
 
 
 def buttons(m: dict) -> list[dict[str, Any]]:

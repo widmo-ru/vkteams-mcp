@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2 (2026-11-16)
+
+Fixes from the fourth QA round.
+
+- A mention written with spaces inside, `@[ address ]`, counts towards the 20-people cap in drafts and
+  edits and is listed in the draft preview. VK Teams treats it as a mention (live: an edit with 21 of them
+  notified 21 people).
+- An edit to invisible characters only is refused, as a draft already was. Hangul fillers (U+3164 and
+  its kin) and the blank Braille pattern (U+2800) now count as invisible in drafts, polls and edits.
+- A bot button's print is keyed by the server's secret. The unkeyed 24-bit print let a bot find another
+  button with the same print in under a minute and have it pressed. Its fields are encoded one by one,
+  so moving a line from the label into the data changes the print.
+- `@someone@example.com` in an edit becomes a mention, as in a draft, and counts towards the cap.
+
 ## 0.2.1 (2026-11-16)
 
 - A client the server no longer knows (registered with 0.1, or before the secret changed) used to get

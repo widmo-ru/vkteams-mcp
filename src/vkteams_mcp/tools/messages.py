@@ -47,7 +47,13 @@ MAX_POLL_OPTIONS = 10
 MAX_POLL_OPTION = 300
 # live: a year ahead is accepted, decades are refused at send ("too far in the future"), after the person agreed
 MAX_SCHEDULE_DAYS = 366
-_NATIVE_MENTION = re.compile(r"@\[([^\[\]\s]+)\]")
+# Live: VK Teams reads `@[ address ]` with spaces inside as a mention too, so every @[...] counts, trimmed.
+_NATIVE_MENTION = re.compile(r"@\[([^\[\]]+)\]")
+
+
+def _native_mentions(text: str) -> set[str]:
+    return {m.strip() for m in _NATIVE_MENTION.findall(text) if m.strip()}
+
 
 ChatArg = Annotated[
     str,
@@ -279,12 +285,11 @@ async def _save_draft(c, sn, text, mention, reply_to, poll_options, send_at, att
     if mentioned:
         body = " ".join(f"@[{m}]" for m in mentioned) + " " + body
     # An address written as @someone@example.com in the text becomes a mention too; names go in `mention`.
-    inline = sorted(set(_INLINE_ADDRESS.findall(body)), key=len, reverse=True)
-    for addr in inline:  # longest first, and an address ends where no address character follows
-        body = re.sub(rf"(?<![\w\[])@{re.escape(addr)}(?![\w@-]|\.\w)", f"@[{addr}]", body)
+    body, inline = _inline_mentions(body)
     mentioned += [a for a in inline if a not in mentioned]
+    mentioned += sorted(_native_mentions(body) - set(mentioned))  # typed natively: the preview lists them too
     # every @[...] in the final text notifies someone, however it got there: typed natively, by name, or inline
-    notified = set(_NATIVE_MENTION.findall(body)) | set(mentioned)
+    notified = _native_mentions(body) | set(mentioned)
     if len(notified) > MAX_PEOPLE:  # a mention notifies: the same cap as every other action that reaches people
         raise VKError("too_many", limit=MAX_PEOPLE, what="people mentioned", count=len(notified))
     quote, quote_author = None, None
@@ -514,15 +519,15 @@ async def update_message(
                 raise VKError("not_found")
             await c.vk.rapi("message/scheduled/cancel", {"sn": sn, "scheduledMsgIds": [message]}, write=True)
             return {"chat": sn, "done": "cancelled", "scheduled_id": shown}
-        if action == "edit" and not (text or "").strip():
+        if action == "edit" and not _visible(text or ""):
             raise invalid("edit needs text: the new message. Nothing was changed.")
+        if action == "edit":
+            text, _ = _inline_mentions(text.strip())
         if action == "edit" and len(text.strip()) > MAX_TEXT:
             raise VKError("too_large", size=f"{len(text.strip())} characters", limit=f"{MAX_TEXT} characters")
-        if action == "edit" and len(set(_NATIVE_MENTION.findall(text))) > MAX_PEOPLE:
+        if action == "edit" and len(_native_mentions(text)) > MAX_PEOPLE:
             # live: an edit to 21 @[address] made VK Teams record 21 mentions, so edits keep the cap too
-            raise VKError(
-                "too_many", limit=MAX_PEOPLE, what="people mentioned", count=len(set(_NATIVE_MENTION.findall(text)))
-            )
+            raise VKError("too_many", limit=MAX_PEOPLE, what="people mentioned", count=len(_native_mentions(text)))
         if action == "react" and not (reaction and _one_emoji(reaction)):
             raise invalid("react needs reaction: one emoji, such as 👍. Nothing was changed.")
         if action == "vote" and option is None:
@@ -577,10 +582,25 @@ async def _poll_of(c, sn: str, message: int) -> str:
     return poll
 
 
+def _inline_mentions(text: str) -> tuple[str, list[str]]:
+    """@someone@example.com written in a text, made the mention VK Teams shows, in a draft and an edit alike."""
+    inline = sorted(set(_INLINE_ADDRESS.findall(text)), key=len, reverse=True)
+    for addr in inline:  # longest first, and an address ends where no address character follows
+        text = re.sub(rf"(?<![\w\[])@{re.escape(addr)}(?![\w@-]|\.\w)", f"@[{addr}]", text)
+    return text, inline
+
+
 def _visible(text: str) -> bool:
     """Something a person can see: not only spaces and zero-width or format characters (U+200B, U+2060, BOM).
     Live: VK Teams accepts a poll answer of U+200B alone."""
-    return any(not ch.isspace() and unicodedata.category(ch) not in ("Cf", "Mn", "Zs") for ch in text)
+    return any(
+        not ch.isspace() and ch not in _BLANK_GLYPHS and unicodedata.category(ch) not in ("Cf", "Mn", "Zs")
+        for ch in text
+    )
+
+
+# Letters and symbols by category that draw nothing: Hangul fillers and the blank Braille pattern (QA round 4)
+_BLANK_GLYPHS = frozenset("\u115f\u1160\u3164\uffa0\u2800")
 
 
 def _plain_file_name(name: str) -> bool:

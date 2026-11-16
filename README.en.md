@@ -129,7 +129,7 @@ openssl rand -base64 48 > vkteams-mcp.secret   # once, the same for every replic
 docker run -p 127.0.0.1:8000:8000 \
   -e VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org \
   -e VKTEAMS_MCP_SECRET="$(cat vkteams-mcp.secret)" \
-  ghcr.io/widmo-ru/vkteams-mcp:0.2.1
+  ghcr.io/widmo-ru/vkteams-mcp:0.2.2
 ```
 
 To build the image yourself: `docker build -t vkteams-mcp .`.

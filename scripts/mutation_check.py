@@ -84,6 +84,52 @@ MUTATIONS = [
         ["tests/unit/test_signin.py::test_code_requests_are_limited"],
     ),
     (
+        "spaced native mentions count",
+        "tools/messages.py",
+        [
+            (
+                '_NATIVE_MENTION = re.compile(r"@\\[([^\\[\\]]+)\\]")',
+                '_NATIVE_MENTION = re.compile(r"@\\[([^\\[\\]\\s]+)\\]")',
+            )
+        ],
+        ["tests/unit/test_qa_attacks.py::test_spaced_mentions_in_an_edit_are_held_to_the_people_cap"],
+    ),
+    (
+        "button fields are encoded one by one",
+        "tools/_common.py",
+        [
+            (
+                'json.dumps([str(b.get(k, "")) for k in ("text", "callbackData", "url")], ensure_ascii=False).encode()',
+                '"\\n".join(str(b.get(k, "")) for k in ("text", "callbackData", "url")).encode()',
+            )
+        ],
+        ["tests/unit/test_qa_attacks.py::test_moving_text_between_a_buttons_fields_changes_its_print"],
+    ),
+    (
+        "blank glyphs are invisible",
+        "tools/messages.py",
+        [("not ch.isspace() and ch not in _BLANK_GLYPHS and", "not ch.isspace() and")],
+        ["tests/unit/test_qa_attacks.py::test_blank_letters_are_invisible_in_a_draft_and_an_edit"],
+    ),
+    (
+        "an edit must be visible",
+        "tools/messages.py",
+        [('if action == "edit" and not _visible(text or ""):', 'if action == "edit" and not (text or "").strip():')],
+        ["tests/unit/test_qa_attacks.py::test_an_edit_to_invisible_characters_is_refused"],
+    ),
+    (
+        "button print is keyed",
+        "tools/_common.py",
+        [("hmac.new(key, seen, hashlib.sha256).hexdigest()[:6]", "hashlib.sha256(seen).hexdigest()[:6]")],
+        ["tests/unit/test_qa_attacks.py::test_a_buttons_print_depends_on_the_servers_secret"],
+    ),
+    (
+        "an edit turns addresses into mentions",
+        "tools/messages.py",
+        [("            text, _ = _inline_mentions(text.strip())", "            text = text.strip()")],
+        ["tests/unit/test_qa_attacks.py::test_inline_addresses_in_an_edit_are_held_to_the_people_cap"],
+    ),
+    (
         "an unknown client gets a page, not JSON",
         "signin.py",
         [('if message["type"] == "http.response.start" and message["status"] == 400:', "if False:")],
@@ -291,7 +337,7 @@ MUTATIONS = [
         "tools/messages.py",
         [
             (
-                '        if action == "edit" and len(set(_NATIVE_MENTION.findall(text))) > MAX_PEOPLE:',
+                '        if action == "edit" and len(_native_mentions(text)) > MAX_PEOPLE:',
                 "        if False:",
             )
         ],
