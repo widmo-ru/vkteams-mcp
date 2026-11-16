@@ -121,14 +121,18 @@ claude mcp add --transport http vkteams https://vkteams-mcp.example.org/mcp
 
 ## Run it
 
+A ready image for linux/amd64 and linux/arm64 is in the GitHub Container Registry; versions are in
+[CHANGELOG.md](CHANGELOG.md) and on the [releases](https://github.com/widmo-ru/vkteams-mcp/releases) page.
+
 ```sh
 openssl rand -base64 48 > vkteams-mcp.secret   # once; keep it: a new secret cannot open old sessions
-docker build -t vkteams-mcp .
 docker run -p 127.0.0.1:8000:8000 -v vkteams-data:/data \
   -e VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org \
   -e VKTEAMS_MCP_SECRET="$(cat vkteams-mcp.secret)" \
-  vkteams-mcp
+  ghcr.io/widmo-ru/vkteams-mcp:0.1.0
 ```
+
+To build the image yourself: `docker build -t vkteams-mcp .`.
 
 | Variable | Meaning |
 |---|---|
@@ -143,8 +147,18 @@ docker run -p 127.0.0.1:8000:8000 -v vkteams-data:/data \
 | `VKTEAMS_MCP_DEV_ID` | VK Teams developer id (default: the desktop client's public one, from the open-source im-desktop) |
 
 The container speaks plain HTTP on port 8000. Put a reverse proxy that terminates TLS for
-`VKTEAMS_MCP_PUBLIC_URL` in front of it: OAuth and sign-in codes must travel over HTTPS. Run one
-replica: the server keeps rate limits and file links in memory.
+`VKTEAMS_MCP_PUBLIC_URL` in front of it: OAuth and sign-in codes must travel over HTTPS.
+
+Where state lives:
+
+| Where | What | After a restart |
+|---|---|---|
+| SQLite in `/data` | VK Teams sessions and drafts (sealed), hashes of our OAuth tokens, registered clients | kept: sign-ins and drafts survive |
+| process memory | each person's rate allowance, file links, the code step of the sign-in page, a one-minute chat list cache | lost |
+| the MCP client | its own access and refresh tokens only | up to the client |
+
+So the server runs as one replica. Two replicas would split the allowance between them and miss each
+other's file links.
 
 Most corporate VK Teams servers answer only inside the company network. Run the connector
 there, pinned to that one installation, with `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1`.

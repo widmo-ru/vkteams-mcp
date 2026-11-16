@@ -120,14 +120,18 @@ claude mcp add --transport http vkteams https://vkteams-mcp.example.org/mcp
 
 ## Запуск
 
+Готовый образ для linux/amd64 и linux/arm64 лежит в GitHub Container Registry, версии описаны в
+[CHANGELOG.md](CHANGELOG.md) и на странице [релизов](https://github.com/widmo-ru/vkteams-mcp/releases).
+
 ```sh
 openssl rand -base64 48 > vkteams-mcp.secret   # один раз; храните: новый секрет не откроет старые сессии
-docker build -t vkteams-mcp .
 docker run -p 127.0.0.1:8000:8000 -v vkteams-data:/data \
   -e VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org \
   -e VKTEAMS_MCP_SECRET="$(cat vkteams-mcp.secret)" \
-  vkteams-mcp
+  ghcr.io/widmo-ru/vkteams-mcp:0.1.0
 ```
+
+Собрать образ самому: `docker build -t vkteams-mcp .`.
 
 | Переменная | Значение |
 |---|---|
@@ -142,8 +146,18 @@ docker run -p 127.0.0.1:8000:8000 -v vkteams-data:/data \
 | `VKTEAMS_MCP_DEV_ID` | developer id VK Teams (по умолчанию публичный id десктопного клиента из открытого im-desktop) |
 
 Контейнер работает по HTTP на порту 8000. Поставьте перед ним обратный прокси с TLS на адрес
-`VKTEAMS_MCP_PUBLIC_URL`: OAuth и коды входа должны идти по HTTPS. Нужна одна реплика: лимиты и ссылки
-на файлы сервер держит в памяти.
+`VKTEAMS_MCP_PUBLIC_URL`: OAuth и коды входа должны идти по HTTPS.
+
+Где что хранится:
+
+| Где | Что | После перезапуска |
+|---|---|---|
+| SQLite в `/data` | сессии VK Teams и черновики (зашифрованы), хеши наших OAuth-токенов, зарегистрированные клиенты | остаётся: вход и черновики живут |
+| память процесса | лимит действий человека, ссылки на файлы, шаг ввода кода на странице входа, кэш списка чатов на минуту | сбрасывается |
+| MCP-клиент | только свои токены доступа и обновления | как хранить их, решает клиент |
+
+Поэтому сервер работает в одной реплике. Две реплики разделили бы лимит между собой и не нашли бы
+чужие ссылки на файлы.
 
 Большинство корпоративных серверов VK Teams отвечают только внутри сети компании. Тогда коннектор ставят
 туда же, закрепляют за одной инсталляцией и включают `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1`.
