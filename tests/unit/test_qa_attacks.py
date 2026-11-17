@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-from conftest import BASE, EVENTS_PATH, GROUP, GROUP2, HOST, call_tool, dialogs, history_like_vk, ok, saved
+from conftest import BASE, EVENTS_PATH, GROUP, GROUP2, HOST, ME, call_tool, dialogs, history_like_vk, ok, saved, wim_ok
 
 from vkteams_mcp.tools._common import button_token
 
@@ -767,3 +767,77 @@ async def test_a_fresh_send_is_not_a_resend_when_the_clocks_differ(server, chats
     d = await saved(server, chat=GROUP, text="now")
     r = (await call_tool(server, "send_draft", {"chat": GROUP, "draft": d, "user_confirmed": True})).structured_content
     assert "already_sent" not in r, r
+
+
+# ---------------------------------------------------------------- production report, 17.11
+# P1 after a while every one-to-one chat vanished from the chat list: the session's stream replayed only the
+#    group list, with no dialog states, and the session was renewed only when the stream was empty.
+# P2 a person not in the chat list could not be named as a chat, though find_people found them; and the
+#    person's own "Favorites" chat could not be named at all.
+
+
+def _groups_only() -> dict:
+    full = dialogs((GROUP, "Project Alpha", 0, 1_800_000_100, "x"))
+    full["response"]["data"]["events"] = [e for e in full["response"]["data"]["events"] if e["type"] == "buddylist"]
+    return full
+
+
+async def test_a_stream_without_dialog_states_renews_the_session(server, chats):
+    chats.routes[("GET", EVENTS_PATH)] = [_groups_only()]
+    chats.wim(
+        "aim/startSession",
+        wim_ok(
+            {
+                "aimsid": "aimsid-2",
+                "fetchBaseURL": f"https://{HOST}{BASE}/bos/node-1/aim/fetchEventsFresh?aimsid=aimsid-2",
+                "myInfo": {"aimId": ME},
+            }
+        ),
+        method="POST",
+    )
+    chats.on(
+        "GET",
+        f"{BASE}/bos/node-1/aim/fetchEventsFresh",
+        dialogs(
+            (GROUP, "Project Alpha", 0, 1_800_000_100, "x"), ("ann@example.com", "Ann Smith", 1, 1_800_000_200, "hi")
+        ),
+    )
+    r = (await call_tool(server, "list_chats", {"filter": "people"})).structured_content
+    assert [x["chat"] for x in r["items"]] == ["ann@example.com"], r
+
+
+async def test_a_person_outside_the_chat_list_is_found_in_the_directory(server, chats):
+    chats.rapi("search", ok({"data": [{"sn": "bob@example.com", "anketa": {"friendly": "Bob Stone"}}]}))
+    chats.rapi("getUserInfo", ok({"friendly": "Bob Stone"}))
+    r = await call_tool(server, "get_chat", {"chat": "Bob Stone"})
+    assert not r.is_error and r.structured_content["chat"] == "bob@example.com", r.content
+
+
+async def test_several_people_in_the_directory_are_offered_not_guessed(server, chats):
+    chats.rapi(
+        "search",
+        ok({"data": [{"sn": f"bob{i}@example.com", "anketa": {"friendly": f"Bob {i}"}} for i in range(2)]}),
+    )
+    r = await call_tool(server, "get_chat", {"chat": "Bob"})
+    assert r.is_error and "bob0@example.com" in r.content[0].text and "bob1@example.com" in r.content[0].text
+
+
+async def test_a_chat_title_still_wins_over_the_directory(server, chats):
+    chats.rapi("getChatInfo", ok({"name": "Project Beta"}))
+    r = await call_tool(server, "get_chat", {"chat": "Project Beta"})
+    assert not r.is_error and chats.calls("search") == []
+
+
+@pytest.mark.parametrize("name", ["Избранное", "избранное", "Favorites", "Saved messages"])
+async def test_favorites_is_the_persons_own_chat(server, chats, name):
+    chats.rapi("getUserInfo", ok({"friendly": "Test Person"}))
+    r = await call_tool(server, "get_chat", {"chat": name})
+    assert not r.is_error and r.structured_content["chat"] == ME, r.content
+
+
+async def test_a_group_titled_favorites_is_that_group(server, chats):
+    """From review: the alias must not shadow a real chat with that title."""
+    chats.routes[("GET", EVENTS_PATH)] = [dialogs((GROUP, "Избранное", 0, 1_800_000_100, "x"))]
+    chats.rapi("getChatInfo", ok({"name": "Избранное"}))
+    r = await call_tool(server, "get_chat", {"chat": "Избранное"})
+    assert not r.is_error and r.structured_content["chat"] == GROUP, r.content

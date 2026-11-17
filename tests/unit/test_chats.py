@@ -45,6 +45,7 @@ async def test_a_chat_is_found_by_part_of_its_title(server, chats):
 
 
 async def test_an_unknown_chat_says_where_to_look(server, chats):
+    chats.rapi("search", ok({"data": []}))  # nobody by that name in the directory either
     r = await call_tool(server, "get_chat", {"chat": "Gamma"})
     assert r.is_error and "list_chats" in text_of(r)
 

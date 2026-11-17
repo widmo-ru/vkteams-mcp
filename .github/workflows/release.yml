@@ -55,8 +55,11 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          # a plain Docker manifest list with the two platforms and nothing else: provenance and SBOM
+          # entries (platform unknown/unknown) made a Nexus proxy offer only arm64
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.IMAGE }}:sha-${{ github.sha }},push=true,oci-mediatypes=false
       - name: The staged image starts, runs unprivileged and carries this version
         run: |
           set -euo pipefail
@@ -76,6 +79,18 @@ jobs:
             echo "$platform: uid $uid, version $got"
             test "$got" = "$v"
           done
+      - name: The staged image lists exactly amd64 and arm64, before any public tag moves
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect --raw "$IMAGE@${{ steps.build.outputs.digest }}" > index.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("index.json"))
+          seen = sorted(f"{m['platform']['os']}/{m['platform']['architecture']}" for m in d.get("manifests") or [])
+          print(d.get("mediaType"), seen)
+          assert d.get("mediaType") == "application/vnd.docker.distribution.manifest.list.v2+json", "not a manifest list"
+          assert seen == ["linux/amd64", "linux/arm64"], "a registry proxy offers only what this lists"
+          PY
       - name: Promote the checked image to the public tags
         run: |
           set -euo pipefail

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.6 (2026-11-18)
+
+From the first production report.
+
+- One-to-one chats no longer vanish from the chat list. An older session's event stream replayed the
+  group list without dialog states; the server now opens a new session whenever the stream carries no
+  dialog states, not only when it is empty.
+- A chat can be named by a colleague's name even when it is not in the chat list yet: the directory is
+  searched, as `find_people` does, and several matches are offered rather than guessed. "Избранное",
+  "Favorites" and "Saved messages" name the person's own chat.
+- The image is built on Alpine and has no HIGH or CRITICAL findings in Trivy; the Debian base carried 101,
+  none with a fix from Debian. CI now fails on any such finding.
+- The image is published as a plain Docker manifest list with linux/amd64 and linux/arm64 and nothing else.
+  The provenance entries of earlier releases made a Nexus proxy offer only arm64.
+
 ## 0.2.5 (2026-11-16)
 
 The open QA remarks.

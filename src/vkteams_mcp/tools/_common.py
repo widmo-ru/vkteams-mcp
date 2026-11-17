@@ -76,7 +76,9 @@ async def chat_index(c: Call) -> dict[str, dict[str, Any]]:
     if hit and hit[0] > time.time():
         return hit[1]
     events = await c.vk.snapshot()
-    if not any(e.get("type") in ("buddylist", "histDlgState") for e in events):
+    if not any(e.get("type") == "histDlgState" for e in events):
+        # live (production, 17.11): an older session's stream replays the group list and no dialog states,
+        # and every one-to-one chat disappears; a new session starts with all of them
         await c.vk.renew()
         events = await c.vk.snapshot()
     index: dict[str, dict[str, Any]] = {}
@@ -124,6 +126,10 @@ def forget_index(c: Call) -> None:
     c.rt.__dict__.setdefault("_chat_index", {}).pop(c.person, None)
 
 
+# names of the person's own chat with themselves, as the VK Teams apps call it
+FAVORITES = frozenset({"избранное", "favorites", "favourites", "saved messages", "сохранённые", "сохраненные"})
+
+
 async def resolve_chat(c: Call, chat: str) -> str:
     """A chat named by id, address or title → its sn. Ambiguity lists candidates (rule 7)."""
     chat = (chat or "").strip()
@@ -138,11 +144,20 @@ async def resolve_chat(c: Call, chat: str) -> str:
     exact = [sn for sn, e in index.items() if str(e.get("title", "")).casefold() == q]
     if len(exact) == 1:
         return exact[0]
+    if not exact and q in FAVORITES:
+        return c.me  # the person's own notes: a one-to-one chat with themselves, unless a chat has that title
     found = exact or [sn for sn, e in index.items() if q in str(e.get("title", "")).casefold()]
     if len(found) == 1:
         return found[0]
     if not found:
-        raise VKError("unresolved", kind="chat", query=chat)
+        # a one-to-one chat appears in the list only once there is history: a colleague named by name is
+        # looked up in the directory, as find_people does (production, 17.11)
+        try:
+            return await resolve_person(c, chat)
+        except VKError as e:
+            if e.key == "unresolved":
+                raise VKError("unresolved", kind="chat", query=chat) from None
+            raise
     return _ambiguous("chat", chat, [(sn, index[sn].get("title", sn)) for sn in found])
 
 

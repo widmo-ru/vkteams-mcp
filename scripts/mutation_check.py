@@ -256,6 +256,29 @@ MUTATIONS = [
         ["tests/unit/test_qa_attacks.py::test_members_of_a_one_to_one_chat_are_named_not_ignored"],
     ),
     (
+        "no dialog states renews the session",
+        "tools/_common.py",
+        [('    if not any(e.get("type") == "histDlgState" for e in events):', "    if not events:")],
+        ["tests/unit/test_qa_attacks.py::test_a_stream_without_dialog_states_renews_the_session"],
+    ),
+    (
+        "a chat name falls back to the directory",
+        "tools/_common.py",
+        [
+            (
+                "            return await resolve_person(c, chat)",
+                '            raise VKError("unresolved", kind="person", query=chat)',
+            )
+        ],
+        ["tests/unit/test_qa_attacks.py::test_a_person_outside_the_chat_list_is_found_in_the_directory"],
+    ),
+    (
+        "favorites is the person's own chat",
+        "tools/_common.py",
+        [("    if not exact and q in FAVORITES:", "    if False:")],
+        ["tests/unit/test_qa_attacks.py::test_favorites_is_the_persons_own_chat"],
+    ),
+    (
         "an edit must be visible",
         "tools/messages.py",
         [('if action == "edit" and not _visible(text or ""):', 'if action == "edit" and not (text or "").strip():')],

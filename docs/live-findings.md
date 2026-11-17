@@ -71,3 +71,4 @@ Where the reverse-engineered descriptions in circulation say otherwise, this fil
 | Finding | Consequence |
 |---|---|
 | Many corporate installations resolve to private addresses and are reachable only inside the company network. | A public cloud connector cannot reach them; the same image runs inside the network with `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1` and the installation pinned. |
+| An older session's event stream can replay the group list and no dialog states: every one-to-one chat disappears from the list. A new session (`startSession`) starts with all of them (production, 2026-11-17). | The chat list opens a new session whenever the stream has no dialog states, then reads it again (`test_a_stream_without_dialog_states_renews_the_session`). |

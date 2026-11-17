@@ -50,7 +50,7 @@ MESSAGES: dict[str, str] = {
 
 # Where to look when a name matched nothing.
 WHERE = {
-    "chat": "list_chats with a query finds chats by part of their title.",
+    "chat": "list_chats with a query finds chats by part of their title; find_people finds colleagues by name.",
     "person": "find_people finds people by part of a name; an e-mail address always works.",
     "message": "list_messages shows the chat's messages with their ids.",
     "folder": "list_chats with filter=folder lists the folders.",

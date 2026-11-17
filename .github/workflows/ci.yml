@@ -70,6 +70,33 @@ jobs:
           got="$(docker exec mcp id -u)"
           echo "image user: ${want:-<none>}, running as uid: $got"
           test -n "$want" && test "$got" = "$want" && test "$got" != 0
+      - name: No HIGH or CRITICAL vulnerability in the image
+        run: |
+          set -euo pipefail
+          trivy="aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$trivy" image --quiet \
+            --severity CRITICAL,HIGH --list-all-pkgs --format json vkteams-mcp:ci > trivy.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("trivy.json"))
+          os_ = (d.get("Metadata") or {}).get("OS") or {}
+          results = d.get("Results") or []
+          found = [v for r in results for v in r.get("Vulnerabilities") or []]
+          fixable = [v for v in found if v.get("FixedVersion")]
+          print(f"trivy: {os_.get('Family')} {os_.get('Name')}, {len(results)} targets, "
+                f"{len(found)} HIGH/CRITICAL, {len(fixable)} with a fix")
+          for v in found:
+              print(f"  {v['Severity']} {v['PkgName']} {v['VulnerabilityID']} fixed in {v.get('FixedVersion') or '-'}")
+          # a scan that saw no operating system or none of the Python dependencies proves nothing
+          os_pkgs = [p for r in results if r.get("Class") == "os-pkgs" for p in r.get("Packages") or []]
+          py_pkgs = {p["Name"].lower() for r in results if r.get("Class") == "lang-pkgs" for p in r.get("Packages") or []}
+          print(f"trivy saw {len(os_pkgs)} system packages and {len(py_pkgs)} Python packages")
+          assert os_.get("Family") and os_pkgs, "trivy saw no system packages"
+          assert {"cryptography", "pydantic", "mcp"} <= py_pkgs, "trivy did not see the Python dependencies"
+          # every finding counts, fixed upstream or not: a company scanner in front of its registry counts them
+          # all, and the Debian base passed a fixable-only gate with 101 findings and no fix for any of them
+          assert not found, "HIGH or CRITICAL findings in the image"
+          PY
       - name: Two replicas share nothing but the secret
         run: |
           set -euo pipefail
