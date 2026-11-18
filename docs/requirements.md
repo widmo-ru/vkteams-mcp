@@ -147,6 +147,15 @@ partial result: the tool reports who failed and why.
 | a cursor from the same tool but another list (filter, chat, query) | tests/unit/test_qa_regressions.py::test_a_list_chats_cursor_is_bound_to_its_filter |
 | a message id given as a JSON number | tests/unit/test_qa_regressions.py::test_a_message_id_given_as_a_number_is_refused |
 
+### The sealing key
+
+| Refusal | Test |
+|---|---|
+| starting with no key file and no VKTEAMS_MCP_SECRET | tests/unit/test_key.py::test_a_missing_key_file_refuses_to_start_and_says_why |
+| starting with a key file that cannot be deleted (a Secret mounted into the server's container) | tests/unit/test_key.py::test_a_key_file_that_cannot_be_deleted_refuses_to_start |
+| a key shorter than 32 characters | tests/unit/test_key.py::test_a_short_key_in_the_file_is_refused_and_still_deleted |
+| a token, refresh or registration sealed under a previous deploy's key | tests/unit/test_key.py::test_a_new_key_signs_everyone_out_once_and_they_sign_in_again |
+
 ### Sending and changing
 
 | Refusal | Test |

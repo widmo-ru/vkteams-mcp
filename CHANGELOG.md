@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 (2026-11-18)
+
+The sealing key lives only in the server's memory.
+
+- The key arrives as a file, `VKTEAMS_MCP_KEY_FILE` (default `/run/vkteams-mcp/key`), which the server reads
+  at start and deletes. In Kubernetes an init container copies it there from a Secret into an emptyDir with
+  `medium: Memory`; the server's container gets no Secret volume and no variable, so `kubectl exec … env` and
+  `ls` there show nothing. Without the file the server does not start and says why; a file it cannot delete,
+  such as a Secret mounted straight into its container, is refused too.
+- The deploy pipeline writes a new random key into the Secret on every deploy: `deploy/kubernetes/new-key.sh`
+  for any CI, `deploy/helm/secret.yaml` for Helm and werf. **Every deploy signs everyone out once**: old tokens
+  get 401 `invalid_token` with `resource_metadata`, the old registration gets `invalid_client`, and the client
+  signs in again. A pod restarted without a deploy reads the same Secret and keeps everyone signed in.
+  Replicas are fine; `strategy: Recreate` keeps two keys from serving during a rollout.
+- **`VKTEAMS_MCP_SECRET` is deprecated.** In 0.3.x it is still used when there is no key file, with a warning
+  in the log, so an upgrade with unchanged manifests neither crash-loops nor signs anyone out; when a key file
+  is there the variable is ignored. The next minor release refuses to start while it is set. Either way it is
+  dropped from the process's environment.
+- The settings no longer print the key in their `repr`.
+- The image has `/run/vkteams-mcp`, owned by the server's user.
+
 ## 0.2.6 (2026-11-18)
 
 From the first production report.

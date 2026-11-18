@@ -3,9 +3,9 @@
 The server keeps nothing between requests. The person's VK Teams session travels inside their OAuth
 tokens, a draft inside the draft token the model passes back, the code step of the sign-in page inside
 its form, a file link inside its URL. Each is JSON, compressed, encrypted and authenticated with
-AES-GCM under a key derived from VKTEAMS_MCP_SECRET, and bound to its kind: a draft token cannot be
-replayed as an access token. Any replica that shares the secret opens any blob; nobody without it can
-read or change one.
+AES-GCM under a key derived from the deploy's sealing key (`config`), and bound to its kind: a draft token
+cannot be replayed as an access token. Any replica of the same deploy opens any blob; nobody without the key
+can read or change one, and a new deploy's key opens none of the old ones.
 """
 
 from __future__ import annotations

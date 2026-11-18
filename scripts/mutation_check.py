@@ -687,6 +687,27 @@ MUTATIONS = [
         ],
         ["tests/unit/test_replicas.py::test_a_full_code_cache_still_refuses_the_newest_replay"],
     ),
+    (
+        "the key file is deleted once read",
+        "config.py",
+        [("            os.unlink(path)\n", "            pass\n")],
+        [
+            "tests/unit/test_key.py::test_the_key_is_read_from_the_file_and_the_file_is_deleted",
+            "tests/unit/test_key.py::test_a_short_key_in_the_file_is_refused_and_still_deleted",
+        ],
+    ),
+    (
+        "the key is left out of the settings' repr",
+        "config.py",
+        [("    secret: str = field(repr=False)", "    secret: str")],
+        ["tests/unit/test_key.py::test_the_key_is_in_no_environment_variable_file_or_log_line"],
+    ),
+    (
+        "a leftover VKTEAMS_MCP_SECRET leaves the process environment",
+        "config.py",
+        [('        os.environ.pop("VKTEAMS_MCP_SECRET", None)', "        pass")],
+        ["tests/unit/test_key.py::test_the_secret_variable_is_dropped_from_the_process_environment"],
+    ),
 ]
 
 

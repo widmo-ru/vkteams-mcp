@@ -54,9 +54,14 @@ jobs:
       - name: Start and probe
         run: |
           set -euo pipefail
+          # the key arrives as a file, as an init container leaves it; it is piped, never in a variable
+          # (kept on the runner only so the next step can look for it by value)
+          openssl rand -base64 48 | tr -d '\n' > "$RUNNER_TEMP/key"
+          docker volume create key-mcp >/dev/null
+          docker run --rm -i -v key-mcp:/run/vkteams-mcp --entrypoint sh vkteams-mcp:ci \
+            -c 'umask 277; cat > /run/vkteams-mcp/key' < "$RUNNER_TEMP/key"
           docker run -d --name mcp -p 127.0.0.1:8000:8000 \
-            -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org \
-            -e VKTEAMS_MCP_SECRET="$(openssl rand -base64 48)" \
+            -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -v key-mcp:/run/vkteams-mcp \
             vkteams-mcp:ci
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1; then break; fi
@@ -70,6 +75,43 @@ jobs:
           got="$(docker exec mcp id -u)"
           echo "image user: ${want:-<none>}, running as uid: $got"
           test -n "$want" && test "$got" = "$want" && test "$got" != 0
+      - name: The key is read once and left nowhere
+        run: |
+          set -euo pipefail
+          # the file is gone, and the server still serves: the key is in its memory and nowhere else
+          left="$(docker exec mcp ls -A /run/vkteams-mcp)"
+          echo "left in /run/vkteams-mcp: ${left:-nothing}"
+          test -z "$left"
+          # look for the key by value in what `kubectl exec` can see: env, the server's environment, the log
+          test "$(wc -c < "$RUNNER_TEMP/key")" -ge 64  # the reference is there, or nothing below is checked
+          docker exec mcp env > env.txt
+          docker exec mcp sh -c 'tr "\0" "\n" < /proc/1/environ' > environ.txt
+          docker logs mcp > log.txt 2>&1
+          for f in env.txt environ.txt; do grep -q '^VKTEAMS_MCP_PUBLIC_URL=' "$f"; done  # each was really read
+          grep -q 'session manager started' log.txt
+          for f in env.txt environ.txt log.txt; do
+            # grep: 0 found, 1 not found, anything else is a check that did not run
+            rc=0; grep -qF -f "$RUNNER_TEMP/key" "$f" || rc=$?
+            echo "$f: $(wc -l < "$f") lines, grep $rc"
+            test "$rc" = 1
+          done
+          rm -f env.txt environ.txt log.txt "$RUNNER_TEMP/key"
+          curl -fsS http://127.0.0.1:8000/healthz
+          # a container started again without the file says what to do and stops, rather than serving
+          docker restart mcp >/dev/null
+          for _ in $(seq 1 20); do test "$(docker inspect -f '{{.State.Status}}' mcp)" = exited && break; sleep 1; done
+          docker inspect -f 'restarted without the key: {{.State.Status}}, exit {{.State.ExitCode}}' mcp
+          test "$(docker inspect -f '{{.State.ExitCode}}' mcp)" = 2
+          docker logs mcp 2>&1 | tail -1 | grep -q 'no sealing key: /run/vkteams-mcp/key does not exist'
+      - name: A leftover VKTEAMS_MCP_SECRET still starts the server, with a warning
+        run: |
+          set -euo pipefail
+          docker run -d --name legacy -p 127.0.0.1:8003:8000 \
+            -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -e VKTEAMS_MCP_SECRET="$(openssl rand -base64 48)" \
+            vkteams-mcp:ci
+          for _ in $(seq 1 30); do curl -fsS -m 2 http://127.0.0.1:8003/healthz >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8003/healthz
+          docker logs legacy 2>&1 | grep -q 'VKTEAMS_MCP_SECRET is deprecated and the next release refuses it'
       - name: No HIGH or CRITICAL vulnerability in the image
         run: |
           set -euo pipefail
@@ -97,14 +139,19 @@ jobs:
           # all, and the Debian base passed a fixable-only gate with 101 findings and no fix for any of them
           assert not found, "HIGH or CRITICAL findings in the image"
           PY
-      - name: Two replicas share nothing but the secret
+      - name: Two replicas share nothing but the key
         run: |
           set -euo pipefail
-          secret="$(openssl rand -base64 48)"
+          # one key, as one deploy's Secret, copied to each replica the way each pod's init container does
+          openssl rand -base64 48 | tr -d '\n' > key.txt
           for n in 1 2; do
+            docker volume create "key-r$n" >/dev/null
+            docker run --rm -i -v "key-r$n:/run/vkteams-mcp" --entrypoint sh vkteams-mcp:ci \
+              -c 'umask 277; cat > /run/vkteams-mcp/key' < key.txt
             docker run -d --name "r$n" -p "127.0.0.1:800$n:8000" \
-              -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -e VKTEAMS_MCP_SECRET="$secret" vkteams-mcp:ci
+              -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -v "key-r$n:/run/vkteams-mcp" vkteams-mcp:ci
           done
+          rm key.txt
           for n in 1 2; do
             up=""
             for _ in $(seq 1 30); do
