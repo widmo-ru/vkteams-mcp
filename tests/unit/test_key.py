@@ -104,8 +104,21 @@ def test_a_key_that_is_not_text_is_refused_and_still_deleted(tmp_path):
     f.write_bytes(b"\xff\xfe" * 40)
     with pytest.raises(ConfigError) as e:
         Settings.from_env(env_with(f))
-    assert "32" in str(e.value)
+    assert "not text" in str(e.value)
     assert not f.exists()
+
+
+def test_a_key_longer_than_the_limit_is_refused_not_shortened(tmp_path):
+    from vkteams_mcp.config import MAX_KEY
+
+    ok = tmp_path / "ok"
+    ok.write_text("k" * MAX_KEY)  # the limit counts the file's bytes
+    assert Settings.from_env(env_with(ok)).secret == "k" * MAX_KEY
+    f = tmp_path / "long"
+    f.write_text("k" * (MAX_KEY + 1))
+    with pytest.raises(ConfigError) as e:
+        Settings.from_env(env_with(f))
+    assert "longer than" in str(e.value) and not f.exists()
 
 
 def test_a_short_key_in_the_file_is_refused_and_still_deleted(tmp_path):

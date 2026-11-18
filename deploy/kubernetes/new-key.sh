@@ -8,6 +8,7 @@
 # no process's arguments and no log line, and nothing here prints it. Every deploy signs everyone out once; a pod restarted without a deploy
 # reads the same Secret and keeps everyone signed in.
 set -eu
+set +x  # a traced run would print the key
 ns="${NAMESPACE:?set NAMESPACE}"
 timeout="${KUBECTL_TIMEOUT:-60s}"
 secret="${SECRET_NAME:-vkteams-mcp-key}"
@@ -19,10 +20,20 @@ if [ "${#key}" -ne 64 ]; then
   echo "openssl gave no key; the Secret is unchanged" >&2
   exit 1
 fi
-printf '%s' "$key" |
+# Server-side apply: a client-side apply would keep a second copy of the key in the Secret's
+# last-applied-configuration annotation. kubectl's own errors can quote the object, so they are not shown.
+if ! printf '%s' "$key" |
   kubectl -n "$ns" create secret generic "$secret" --from-file=key=/dev/stdin --dry-run=client -o yaml |
-  kubectl -n "$ns" apply --request-timeout="$timeout" -f - >/dev/null
+  kubectl -n "$ns" apply --server-side --force-conflicts --field-manager=vkteams-mcp-new-key \
+    --request-timeout="$timeout" -f - >/dev/null 2>&1; then
+  unset key
+  echo "could not write secret/$secret (kubectl's message is not shown, it can carry the key); the Secret is unchanged" >&2
+  exit 1
+fi
 unset key
+# an older client-side apply left that copy behind; remove it if it is there
+kubectl -n "$ns" annotate --request-timeout="$timeout" secret "$secret" \
+  kubectl.kubernetes.io/last-applied-configuration- >/dev/null 2>&1 || true
 echo "new key in secret/$secret"
 kubectl -n "$ns" rollout restart --request-timeout="$timeout" "deployment/$deployment"
 kubectl -n "$ns" rollout status "deployment/$deployment" --timeout=5m

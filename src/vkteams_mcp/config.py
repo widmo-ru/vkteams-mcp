@@ -17,6 +17,7 @@ DEFAULT_DEV_ID = "ic1DcTU-u6i6jrDP"
 # Where the init container leaves the sealing key: a file in an emptyDir with `medium: Memory`. The server
 # reads it once and deletes it, so the key stays in this process's memory and nowhere `kubectl exec` reaches.
 DEFAULT_KEY_FILE = "/run/vkteams-mcp/key"
+MAX_KEY = 4096
 
 log = logging.getLogger("vkteams_mcp")
 
@@ -47,7 +48,7 @@ def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
         os.environ.pop("VKTEAMS_MCP_SECRET", None)
     try:
         with open(path, "rb") as f:
-            raw = f.read(4096)
+            raw = f.read(MAX_KEY + 1)
     except FileNotFoundError:
         if legacy:
             log.warning(
@@ -70,7 +71,7 @@ def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
         try:
             key = raw.decode("utf-8").strip()
         except UnicodeDecodeError:
-            key = ""  # refused below as too short, after the file is gone
+            key = None
         try:
             os.unlink(path)
         except OSError as err:
@@ -79,8 +80,12 @@ def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
                 "mount the Secret only into the init container and give this container an emptyDir "
                 "(medium: Memory) it can write"
             ) from None
+        if len(raw) > MAX_KEY:  # never a silently shortened key: the file is gone, so say so
+            raise ConfigError(f"the sealing key in {path} is longer than {MAX_KEY} bytes")
         if legacy:
             log.warning("VKTEAMS_MCP_SECRET is ignored: the key comes from %s. Remove the variable", path)
+    if key is None:
+        raise ConfigError(f"the sealing key in {path} is not text: write it as base64, as `openssl rand -base64 48`")
     if len(key) < 32:
         raise ConfigError("the sealing key must be at least 32 random characters")
     return key

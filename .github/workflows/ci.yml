@@ -83,7 +83,8 @@ jobs:
           echo "left in /run/vkteams-mcp: ${left:-nothing}"
           test -z "$left"
           # look for the key by value in what `kubectl exec` can see: env, the server's environment, the log
-          test "$(wc -c < "$RUNNER_TEMP/key")" -ge 64  # the reference is there, or nothing below is checked
+          # the reference is the 64 characters `openssl rand -base64 48` gave, or nothing below is checked
+          test "$(wc -c < "$RUNNER_TEMP/key" | tr -d ' ')" = 64
           docker exec mcp env > env.txt
           docker exec mcp sh -c 'tr "\0" "\n" < /proc/1/environ' > environ.txt
           docker logs mcp > log.txt 2>&1

@@ -127,7 +127,8 @@ A ready image for linux/amd64 and linux/arm64 is in the GitHub Container Registr
 The key the server seals sessions with arrives as a file: the server reads it at start and deletes it, and
 from then on the server's container holds it only in the process's memory. Its source (a Secret on
 Kubernetes) stays with the cluster owner. On Kubernetes an init container puts the file there from a
-Secret, and CI writes the Secret on every deploy: [deploy/README.en.md](deploy/README.en.md). A new key signs
+Secret, and a step you add to your deploy pipeline writes the Secret on every deploy:
+[deploy/README.en.md](deploy/README.en.md). A new key signs
 everyone out, once.
 
 Docker works the same way: a short-lived container puts the key in a volume. That volume is on disk, and

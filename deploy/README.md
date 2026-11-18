@@ -63,13 +63,18 @@ sequenceDiagram
 
 ## Любой CI
 
+Деплой образа сам ключ не меняет: шаг `new-key.sh` нужно добавить в свой пайплайн деплоя, сразу после
+применения манифестов.
+
 ```sh
 kubectl -n vkteams apply -f deploy/kubernetes/deployment.yaml
 NAMESPACE=vkteams deploy/kubernetes/new-key.sh
 ```
 
 `new-key.sh` передаёт ключ от `openssl` в API Kubernetes через память шелла и пайп: его нет ни в файле, ни в
-аргументах процессов, ни в логе. Маскировать нечего. Если ваш CI всё же кладёт ключ в переменную, объявите её секретной
+аргументах процессов, ни в логе; трассировку (`sh -x`) он выключает, ошибки `kubectl` не печатает (они могут
+цитировать Secret). Secret пишется server-side apply, без аннотации `last-applied-configuration`, в которой
+обычный `kubectl apply` хранит вторую копию ключа. Маскировать нечего. Если ваш CI всё же кладёт ключ в переменную, объявите её секретной
 (masked в GitLab, `::add-mask::` в GitHub Actions).
 
 ## Helm и werf
@@ -85,7 +90,9 @@ NAMESPACE=vkteams deploy/kubernetes/new-key.sh
 
 Ключ создаёт `randAlphaNum 64` при каждом рендере, значит каждый `helm upgrade` или `werf converge` — новый
 ключ, а изменившаяся аннотация перезапускает поды. Ключ не проходит через values, `--set` и лог CI.
-`helm template` и `werf render` печатают его, как любой Secret: их вывод в лог не отправлять.
+`helm template` и `werf render` печатают его, как любой Secret: их вывод в лог не отправлять. История релизов
+Helm и werf (Secret'ы `sh.helm.release.v1.*`) хранит ключ каждого прошлого деплоя; читают её те же, кто может
+читать Secret'ы в namespace. Длину истории ограничивает `--history-max`.
 
 ## Переход с `VKTEAMS_MCP_SECRET`
 
@@ -106,7 +113,9 @@ NAMESPACE=vkteams deploy/kubernetes/new-key.sh
 | `the sealing key in … could not be deleted` | Secret смонтирован прямо в контейнер сервера, том только для чтения | Secret — только в init-контейнер, серверу — emptyDir `medium: Memory` |
 | `the sealing key in … could not be read` | по пути каталог или нет прав на чтение | проверить `install -m 0400` и `fsGroup: 10001` |
 | `the sealing key must be at least 32 random characters` | в Secret пусто или короткий ключ | заново запустить `new-key.sh` |
+| `the sealing key in … is not text` / `is longer than 4096 bytes` | в Secret не тот файл | заново запустить `new-key.sh` |
 | `VKTEAMS_MCP_SECRET is deprecated …` (предупреждение) | ключ ещё приходит переменной | перейти на init-контейнер, убрать переменную |
+| `VKTEAMS_MCP_SECRET is ignored: the key comes from …` (предупреждение) | есть и файл, и переменная; работает файл | убрать переменную: `kubectl exec … env` всё ещё её показывает |
 
 Почему под не восстанавливается сам: Kubernetes перезапускает упавший контейнер, но не init-контейнер.
 Восстановить ключ внутри пода значит хранить его там, где его видит `kubectl exec`, — это ровно то, от чего
@@ -114,7 +123,9 @@ NAMESPACE=vkteams deploy/kubernetes/new-key.sh
 не удалят. Следите за рестартами контейнера.
 
 Ещё одно окно: между записью нового ключа в Secret и рестартом подов под, который перезапустится сам, возьмёт
-уже новый ключ. `new-key.sh` делает рестарт сразу после записи, окно — секунды.
+уже новый ключ. Если `kubectl apply` изменил шаблон пода, его выкат может идти, пока `new-key.sh` пишет Secret,
+и поды на миг окажутся с разными ключами. `new-key.sh` сразу делает рестарт, `Recreate` сначала гасит все
+старые поды: после него ключ у всех один. Это внутри деплоя, который и так разлогинивает всех.
 
 ## Что остаётся
 

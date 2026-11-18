@@ -63,13 +63,18 @@ browser then shows the "Connect again" page: clear the connector's authorization
 
 ## Any CI
 
+Deploying the image does not change the key by itself: add the `new-key.sh` step to your deploy pipeline,
+right after the manifests are applied.
+
 ```sh
 kubectl -n vkteams apply -f deploy/kubernetes/deployment.yaml
 NAMESPACE=vkteams deploy/kubernetes/new-key.sh
 ```
 
 `new-key.sh` hands the key from `openssl` to the Kubernetes API through the shell's memory and a pipe: it is in
-no file, no process's arguments and no log. There is nothing to mask. If your CI does put the key in a variable, declare it secret
+no file, no process's arguments and no log; it turns tracing (`sh -x`) off and does not print `kubectl`'s errors,
+which can quote the Secret. It writes the Secret by server-side apply, without the `last-applied-configuration`
+annotation in which a plain `kubectl apply` keeps a second copy of the key. There is nothing to mask. If your CI does put the key in a variable, declare it secret
 (masked in GitLab, `::add-mask::` in GitHub Actions).
 
 ## Helm and werf
@@ -85,7 +90,9 @@ Put [`helm/secret.yaml`](helm/secret.yaml) in `templates/` next to the Deploymen
 
 `randAlphaNum 64` makes the key on every render, so every `helm upgrade` or `werf converge` is a new key, and
 the changed annotation restarts the pods. The key passes through no values file, no `--set` and no CI log.
-`helm template` and `werf render` print it, as they print any Secret: keep their output out of logs.
+`helm template` and `werf render` print it, as they print any Secret: keep their output out of logs. Helm's and
+werf's release history (the `sh.helm.release.v1.*` Secrets) keeps the key of every past deploy; the same people
+who can read Secrets in the namespace can read it. `--history-max` limits how far back it goes.
 
 ## Moving from `VKTEAMS_MCP_SECRET`
 
@@ -106,7 +113,9 @@ the init container is the first deploy with a new key: everyone is signed out on
 | `the sealing key in … could not be deleted` | the Secret is mounted straight into the server's container, read-only | the Secret goes to the init container only; the server gets an emptyDir with `medium: Memory` |
 | `the sealing key in … could not be read` | a directory at the path, or no read permission | check `install -m 0400` and `fsGroup: 10001` |
 | `the sealing key must be at least 32 random characters` | the Secret is empty or the key is short | run `new-key.sh` again |
+| `the sealing key in … is not text` / `is longer than 4096 bytes` | the wrong file in the Secret | run `new-key.sh` again |
 | `VKTEAMS_MCP_SECRET is deprecated …` (a warning) | the key still comes as a variable | move to the init container and remove the variable |
+| `VKTEAMS_MCP_SECRET is ignored: the key comes from …` (a warning) | both the file and the variable are there; the file wins | remove the variable: `kubectl exec … env` still shows it |
 
 Why the pod does not recover by itself: Kubernetes restarts a failed container but not its init container.
 Recovering the key inside the pod would mean keeping it where `kubectl exec` sees it, which is exactly what this
@@ -114,7 +123,10 @@ arrangement prevents. The cost: when the process dies (an OOM kill included) the
 until it is deleted. Alert on container restarts.
 
 One more window: between a new key landing in the Secret and the pods restarting, a pod that restarts on its
-own picks up the new key early. `new-key.sh` restarts right after writing, so the window is seconds.
+own picks up the new key early. If `kubectl apply` changed the pod template, its rollout may run while
+`new-key.sh` writes the Secret, and pods may briefly hold different keys. `new-key.sh` restarts right away, and
+`Recreate` stops every old pod first: after it, all pods share one key. This happens inside a deploy, which signs
+everyone out anyway.
 
 ## What remains
 
