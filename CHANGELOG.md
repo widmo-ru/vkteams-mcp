@@ -25,6 +25,10 @@ The sealing key leaves the environment.
 - The settings no longer print the key in their `repr`.
 - The image has `/run/vkteams-mcp`, owned by the server's user.
 
+**Not yet verified live:** a signed-in VK Teams session surviving a container restart, then 401 after a new
+key and a second sign-in. Unit tests and CI cover both with registrations and a fake VK Teams; the run against
+a real VK Teams server is pending a person to sign in. Runbook: [deploy/README.en.md](deploy/README.en.md#live-proof-not-yet-run).
+
 ## 0.2.6 (2026-11-18)
 
 From the first production report.
