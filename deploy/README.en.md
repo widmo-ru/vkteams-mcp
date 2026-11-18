@@ -114,7 +114,8 @@ the init container is the first deploy with a new key: everyone is signed out on
 | `the sealing key in … could not be read` | a directory at the path, or no read permission | check `install -m 0400` and `fsGroup: 10001` |
 | `the sealing key must be at least 32 random characters` | the Secret is empty or the key is short | run `new-key.sh` again |
 | `the sealing key in … is not text` / `is longer than 4096 bytes` | the wrong file in the Secret | run `new-key.sh` again |
-| `could not write secret/…` (in CI, from `new-key.sh`) | the API refused or did not answer in time; `kubectl`'s message is hidden, it can quote the key | check access and the connection: `kubectl auth can-i patch secret/vkteams-mcp-key`. After a timeout the Secret may have changed: run `new-key.sh` again |
+| `could not write secret/…` (in CI, from `new-key.sh`) | the API refused or did not answer in time; `kubectl`'s message is hidden, it can quote the key | check access and the connection: `kubectl -n vkteams auth can-i patch secret/vkteams-mcp-key`. After a timeout the Secret may have changed: run `new-key.sh` again |
+| `secret/… still has a last-applied-configuration annotation` (from `new-key.sh`) | the annotation with an older copy of the key could not be removed; the pods were not restarted | `kubectl -n vkteams annotate secret vkteams-mcp-key kubectl.kubernetes.io/last-applied-configuration-`, then run `new-key.sh` again |
 | `VKTEAMS_MCP_SECRET is deprecated …` (a warning) | the key still comes as a variable | move to the init container and remove the variable |
 | `VKTEAMS_MCP_SECRET is ignored: the key comes from …` (a warning) | both the file and the variable are there; the file wins | remove the variable: `kubectl exec … env` still shows it |
 
