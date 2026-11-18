@@ -694,6 +694,12 @@ MUTATIONS = [
         ["tests/unit/test_key.py::test_a_key_file_readable_by_others_is_refused"],
     ),
     (
+        "a key file of another user is refused",
+        "config.py",
+        [("        if st.st_uid != os.geteuid():", "        if False:")],
+        ["tests/unit/test_key.py::test_a_key_file_of_another_user_is_refused"],
+    ),
+    (
         "a key longer than the limit is refused, not shortened",
         "config.py",
         [("        if len(raw) > MAX_KEY:", "        if False:")],

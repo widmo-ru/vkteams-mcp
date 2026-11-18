@@ -112,6 +112,9 @@ Helm и werf (Secret'ы `sh.helm.release.v1.*`) хранит ключ каждо
 |---|---|---|
 | `no sealing key: /run/vkteams-mcp/key does not exist` | нет init-контейнера или emptyDir | добавить их, как в `deployment.yaml` |
 | `the sealing key in … is readable by others` | файл доступен группе или всем: например, Secret смонтирован прямо в контейнер (`defaultMode` 0440/0644) | Secret — только в init-контейнер; файл кладёт `install -m 0400` |
+| `the sealing key in … is not a regular file` | по пути каталог, FIFO или устройство | файл кладёт init-контейнер: `install -m 0400 /secret/key /run/vkteams-mcp/key` |
+| `the sealing key in … belongs to uid …` | init-контейнер работал не от пользователя сервера | `runAsUser: 10001` на уровне пода, как в `deployment.yaml` |
+| `the process could not be made non-dumpable … not starting` | ядро или seccomp-профиль запретили `prctl(PR_SET_DUMPABLE)` | разрешить `prctl` в профиле seccomp (в `RuntimeDefault` он разрешён) |
 | `the sealing key in … could not be read` | по пути каталог или нет прав на чтение | проверить `install -m 0400` и `fsGroup: 10001` |
 | `the sealing key must be at least 32 random characters` | в Secret пусто или короткий ключ | заново запустить `new-key.sh` |
 | `the sealing key in … is not text` / `is longer than 4096 bytes` | в Secret не тот файл | заново запустить `new-key.sh` |
@@ -131,6 +134,6 @@ Helm и werf (Secret'ы `sh.helm.release.v1.*`) хранит ключ каждо
 |---|---|
 | ключ в `kubectl exec … env`, в логах | да: ключа нет ни в переменных, ни в логах |
 | ключ в томе Secret контейнера сервера | да: Secret смонтирован только в init-контейнер |
-| память процесса через `/proc/<pid>/mem` или ptrace из другого процесса того же пользователя | да: процесс non-dumpable |
+| память процесса через `/proc/<pid>/mem` или ptrace из другого процесса того же пользователя | да: процесс non-dumpable; на Linux без этого сервер не стартует. Проверка: `kubectl exec <под> -c vkteams-mcp -- cat /proc/1/environ` отвечает `Permission denied` |
 | `kubectl exec` в контейнер сервера: `cat /run/vkteams-mcp/key` (тот же uid) | **нет**: закрывает RBAC на `pods/exec` у владельца кластера |
 | ключ в Secret: кто может `get secrets` в namespace, читает его | **нет**: RBAC на `secrets` у владельца кластера |

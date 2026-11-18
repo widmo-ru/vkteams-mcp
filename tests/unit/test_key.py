@@ -59,6 +59,22 @@ def test_a_key_file_readable_by_others_is_refused(tmp_path, mode):
     assert "readable by others" in str(e.value) and KEY_A not in str(e.value)
 
 
+def test_a_key_file_of_another_user_is_refused(tmp_path, monkeypatch):
+    f = key_file(tmp_path, KEY_A)
+    monkeypatch.setattr(os, "geteuid", lambda: f.stat().st_uid + 1)
+    with pytest.raises(ConfigError) as e:
+        Settings.from_env(env_with(f))
+    assert "belongs to uid" in str(e.value) and KEY_A not in str(e.value)
+
+
+def test_a_key_path_that_is_a_fifo_is_refused_without_blocking(tmp_path):
+    p = tmp_path / "fifo"
+    os.mkfifo(p, 0o400)
+    with pytest.raises(ConfigError) as e:
+        Settings.from_env(env_with(p))
+    assert "not a regular file" in str(e.value)
+
+
 def test_the_process_is_made_non_dumpable_on_linux():
     """Another process of the same user cannot read the key from /proc/<pid>/mem once this is set."""
     import subprocess
@@ -77,7 +93,7 @@ def test_the_process_is_made_non_dumpable_on_linux():
     if sys.platform.startswith("linux"):
         assert out == ["True", "0"]
     else:
-        assert out == ["False", "n/a"]
+        assert out == ["None", "n/a"]
 
 
 def test_the_key_is_in_no_environment_variable_file_or_log_line(tmp_path, monkeypatch, caplog):
@@ -112,7 +128,11 @@ def test_a_key_path_that_is_not_a_readable_file_says_so_without_a_traceback(tmp_
     (tmp_path / "dir").mkdir()
     with pytest.raises(ConfigError) as e:
         Settings.from_env(env_with(tmp_path / "dir"))
-    assert "could not be read" in str(e.value)
+    assert "not a regular file" in str(e.value)
+    f = key_file(tmp_path, KEY_A, mode=0o000)
+    with pytest.raises(ConfigError) as e:
+        Settings.from_env(env_with(f))
+    assert "could not be read" in str(e.value) and KEY_A not in str(e.value)
 
 
 def test_a_key_that_is_not_text_is_refused(tmp_path):

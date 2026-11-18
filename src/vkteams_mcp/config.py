@@ -52,8 +52,11 @@ def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
     if e is os.environ:
         os.environ.pop("VKTEAMS_MCP_SECRET", None)
     try:
+        st = os.stat(path)  # before opening: a FIFO would block the start
+        if not stat.S_ISREG(st.st_mode):
+            raise ConfigError(f"the sealing key in {path} is not a regular file")
         with open(path, "rb") as f:
-            mode = os.fstat(f.fileno()).st_mode
+            st = os.fstat(f.fileno())
             raw = f.read(MAX_KEY + 1)
     except FileNotFoundError:
         if not legacy:
@@ -71,12 +74,16 @@ def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
     except OSError as err:  # a directory, no permission: say so without a traceback
         raise ConfigError(f"the sealing key in {path} could not be read ({err.strerror})") from None
     else:
-        if not stat.S_ISREG(mode):
-            raise ConfigError(f"the sealing key in {path} is not a regular file")
+        mode = st.st_mode
         if mode & 0o077:
             raise ConfigError(
                 f"the sealing key in {path} is readable by others (mode {stat.S_IMODE(mode):04o}): it must be 0400, "
                 "owned by the server's user, as `install -m 0400` in the init container leaves it"
+            )
+        if st.st_uid != os.geteuid():
+            raise ConfigError(
+                f"the sealing key in {path} belongs to uid {st.st_uid}, not to this server's uid {os.geteuid()}: "
+                "run the init container as the server's user"
             )
         if len(raw) > MAX_KEY:
             raise ConfigError(f"the sealing key in {path} is longer than {MAX_KEY} bytes")
@@ -93,11 +100,12 @@ def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
     return key
 
 
-def make_undumpable() -> bool:
+def make_undumpable() -> bool | None:
     """Linux: mark this process non-dumpable, so another process of the same user cannot read its memory
-    through /proc/<pid>/mem or ptrace, nor its environment through /proc/<pid>/environ. True when it is set."""
+    through /proc/<pid>/mem or ptrace, nor its environment through /proc/<pid>/environ. True when it is set,
+    False when Linux refused, None on a system without prctl (a developer's machine)."""
     if not sys.platform.startswith("linux"):
-        return False
+        return None
     import ctypes
 
     libc = ctypes.CDLL(None, use_errno=True)

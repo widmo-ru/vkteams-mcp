@@ -142,7 +142,8 @@ docker run -p 127.0.0.1:8000:8000 -v vkteams-mcp-key:/run/vkteams-mcp \
   ghcr.io/widmo-ru/vkteams-mcp:0.3.0
 ```
 
-Restarting the container reads the same file: sessions are kept. A new key in the volume signs everyone out.
+Restarting the container reads the same file: sessions are kept. The key is read only at start: to change it,
+put a new one in the volume and restart the server (every replica); then everyone signs in again.
 
 To build the image yourself: `docker build -t vkteams-mcp .`.
 

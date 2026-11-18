@@ -112,6 +112,9 @@ the init container is the first deploy with a new key: everyone is signed out on
 |---|---|---|
 | `no sealing key: /run/vkteams-mcp/key does not exist` | no init container or emptyDir | add them, as in `deployment.yaml` |
 | `the sealing key in … is readable by others` | the group or everyone can read the file: say, the Secret is mounted straight into the container (`defaultMode` 0440/0644) | the Secret goes to the init container only; `install -m 0400` writes the file |
+| `the sealing key in … is not a regular file` | a directory, FIFO or device at the path | the init container writes the file: `install -m 0400 /secret/key /run/vkteams-mcp/key` |
+| `the sealing key in … belongs to uid …` | the init container ran as another user than the server | `runAsUser: 10001` at the pod level, as in `deployment.yaml` |
+| `the process could not be made non-dumpable … not starting` | the kernel or a seccomp profile refused `prctl(PR_SET_DUMPABLE)` | allow `prctl` in the seccomp profile (`RuntimeDefault` allows it) |
 | `the sealing key in … could not be read` | a directory at the path, or no read permission | check `install -m 0400` and `fsGroup: 10001` |
 | `the sealing key must be at least 32 random characters` | the Secret is empty or the key is short | run `new-key.sh` again |
 | `the sealing key in … is not text` / `is longer than 4096 bytes` | the wrong file in the Secret | run `new-key.sh` again |
@@ -132,6 +135,6 @@ everyone out anyway.
 |---|---|
 | the key in `kubectl exec … env`, in logs | yes: the key is in no variable and no log |
 | the key in a Secret volume of the server's container | yes: the Secret is mounted into the init container only |
-| the process's memory through `/proc/<pid>/mem` or ptrace from another process of the same user | yes: the process is non-dumpable |
+| the process's memory through `/proc/<pid>/mem` or ptrace from another process of the same user | yes: the process is non-dumpable; on Linux the server does not start without it. Check: `kubectl exec <pod> -c vkteams-mcp -- cat /proc/1/environ` answers `Permission denied` |
 | `kubectl exec` into the server's container: `cat /run/vkteams-mcp/key` (the same uid) | **no**: RBAC on `pods/exec`, the cluster owner's side, closes it |
 | the key in the Secret: whoever may `get secrets` in the namespace reads it | **no**: RBAC on `secrets`, the cluster owner's side |

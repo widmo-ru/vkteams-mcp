@@ -153,6 +153,8 @@ partial result: the tool reports who failed and why.
 |---|---|
 | starting with no key file and no VKTEAMS_MCP_SECRET | tests/unit/test_key.py::test_a_missing_key_file_refuses_to_start_and_says_why |
 | a key file the group or anyone else can read | tests/unit/test_key.py::test_a_key_file_readable_by_others_is_refused |
+| a key file owned by another user | tests/unit/test_key.py::test_a_key_file_of_another_user_is_refused |
+| a key path that is not a regular file (a FIFO would block the start) | tests/unit/test_key.py::test_a_key_path_that_is_a_fifo_is_refused_without_blocking |
 | a key shorter than 32 characters | tests/unit/test_key.py::test_a_short_key_in_the_file_is_refused |
 | a key file that is a directory or unreadable | tests/unit/test_key.py::test_a_key_path_that_is_not_a_readable_file_says_so_without_a_traceback |
 | a key file that is not UTF-8 text | tests/unit/test_key.py::test_a_key_that_is_not_text_is_refused |

@@ -104,8 +104,12 @@ def main() -> None:
     except ConfigError as err:  # one line that says what to do, not a traceback
         log.error("%s", err)
         raise SystemExit(2) from None
-    if not make_undumpable():
-        log.warning("the process could not be made non-dumpable: its memory is readable to its own user")
+    dumpable = make_undumpable()
+    if dumpable is False:  # on Linux the protection is promised, so no protection is no start
+        log.error("the process could not be made non-dumpable (prctl PR_SET_DUMPABLE refused): not starting")
+        raise SystemExit(2)
+    if dumpable is None:
+        log.warning("not Linux: the process is not made non-dumpable, its memory is readable to its own user")
     app, _, _ = build(settings)
     uvicorn.run(
         app,
