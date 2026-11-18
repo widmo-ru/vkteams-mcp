@@ -129,15 +129,26 @@ own picks up the new key early. If `kubectl apply` changed the pod template, its
 `Recreate` stops every old pod first: after it, all pods share one key. This happens inside a deploy, which signs
 everyone out anyway.
 
-## Live proof (not yet run)
+## Live proof
 
 Proven live on 2026-11-18 on the published 0.3.0 image (`sha256:8a10645f…`) in a kind cluster: no key in
 `env` or logs (searched by value), the key file `-r-------- 10001`, `/proc/1/environ` refused to the same user,
 no Secret volume in the server's container. To repeat it: `kubectl exec <pod> -c vkteams-mcp -- env`,
 `… -- ls -ln /run/vkteams-mcp`, `… -- cat /proc/1/environ`, and
 `kubectl get pod <pod> -o jsonpath='{.spec.containers[*].volumeMounts[*].name}'`.
-**Not yet run** against a real VK Teams server: a signed-in session surviving a container restart, then 401
-after a new key. It needs a person to sign in twice with an e-mailed code.
+Run on 2026-11-19 against a real VK Teams server, following the steps below:
+
+| Step | Seen |
+|---|---|
+| sign in, `list_chats` | 3 chats |
+| `kill 1` in the server's container | `RESTARTS 1`, the same pod, exit 0 |
+| `list_chats` with the same token | 3 chats, no refresh, no sign-in: the session survived |
+| `new-key.sh` | a new pod |
+| the old access token on `/mcp` | `401`, `Bearer error="invalid_token", … resource_metadata="…/.well-known/oauth-protected-resource/mcp"` |
+| the old refresh token on `/token` | `401 invalid_client` |
+| a second sign-in, `list_chats` | 3 chats |
+
+It needs a person to sign in twice with an e-mailed code.
 
 | Step | Command | Expect |
 |---|---|---|
