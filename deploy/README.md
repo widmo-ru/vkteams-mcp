@@ -114,6 +114,7 @@ Helm и werf (Secret'ы `sh.helm.release.v1.*`) хранит ключ каждо
 | `the sealing key in … could not be read` | по пути каталог или нет прав на чтение | проверить `install -m 0400` и `fsGroup: 10001` |
 | `the sealing key must be at least 32 random characters` | в Secret пусто или короткий ключ | заново запустить `new-key.sh` |
 | `the sealing key in … is not text` / `is longer than 4096 bytes` | в Secret не тот файл | заново запустить `new-key.sh` |
+| `could not write secret/…` (в CI, от `new-key.sh`) | API отказал или не ответил вовремя; текст ошибки `kubectl` скрыт, он может цитировать ключ | проверить права и связь: `kubectl auth can-i patch secret/vkteams-mcp-key`. После таймаута Secret мог измениться: запустить `new-key.sh` ещё раз |
 | `VKTEAMS_MCP_SECRET is deprecated …` (предупреждение) | ключ ещё приходит переменной | перейти на init-контейнер, убрать переменную |
 | `VKTEAMS_MCP_SECRET is ignored: the key comes from …` (предупреждение) | есть и файл, и переменная; работает файл | убрать переменную: `kubectl exec … env` всё ещё её показывает |
 

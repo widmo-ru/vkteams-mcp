@@ -45,6 +45,8 @@ jobs:
     name: image builds and answers
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      KEY_BYTES: 48  # random bytes in the sealing key the probes generate
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,7 +58,7 @@ jobs:
           set -euo pipefail
           # the key arrives as a file, as an init container leaves it; it is piped, never in a variable
           # (kept on the runner only so the next step can look for it by value)
-          openssl rand -base64 48 | tr -d '\n' > "$RUNNER_TEMP/key"
+          openssl rand -base64 "$KEY_BYTES" | tr -d '\n' > "$RUNNER_TEMP/key"
           docker volume create key-mcp >/dev/null
           docker run --rm -i -v key-mcp:/run/vkteams-mcp --entrypoint sh vkteams-mcp:ci \
             -c 'umask 277; cat > /run/vkteams-mcp/key' < "$RUNNER_TEMP/key"
@@ -83,8 +85,8 @@ jobs:
           echo "left in /run/vkteams-mcp: ${left:-nothing}"
           test -z "$left"
           # look for the key by value in what `kubectl exec` can see: env, the server's environment, the log
-          # the reference is the 64 characters `openssl rand -base64 48` gave, or nothing below is checked
-          test "$(wc -c < "$RUNNER_TEMP/key" | tr -d ' ')" = 64
+          # the reference is the base64 of KEY_BYTES random bytes, or nothing below is checked
+          test "$(wc -c < "$RUNNER_TEMP/key" | tr -d ' ')" = "$(( 4 * ((KEY_BYTES + 2) / 3) ))"
           docker exec mcp env > env.txt
           docker exec mcp sh -c 'tr "\0" "\n" < /proc/1/environ' > environ.txt
           docker logs mcp > log.txt 2>&1

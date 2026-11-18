@@ -27,13 +27,21 @@ if ! printf '%s' "$key" |
   kubectl -n "$ns" apply --server-side --force-conflicts --field-manager=vkteams-mcp-new-key \
     --request-timeout="$timeout" -f - >/dev/null 2>&1; then
   unset key
-  echo "could not write secret/$secret (kubectl's message is not shown, it can carry the key); the Secret is unchanged" >&2
+  echo "could not write secret/$secret (kubectl's message is not shown, it can carry the key)." >&2
+  echo "After a timeout the Secret may have changed anyway: run this script again, it writes a new key and restarts the pods." >&2
   exit 1
 fi
 unset key
-# an older client-side apply left that copy behind; remove it if it is there
+# an older client-side apply left a copy behind in this annotation; remove it, and check it is gone
+# without reading its value
 kubectl -n "$ns" annotate --request-timeout="$timeout" secret "$secret" \
   kubectl.kubernetes.io/last-applied-configuration- >/dev/null 2>&1 || true
+left="$(kubectl -n "$ns" get --request-timeout="$timeout" secret "$secret" -o \
+  go-template='{{with .metadata.annotations}}{{if index . "kubectl.kubernetes.io/last-applied-configuration"}}left{{end}}{{end}}')"
+if [ -n "$left" ]; then
+  echo "secret/$secret still has a last-applied-configuration annotation with an older key; remove it" >&2
+  exit 1
+fi
 echo "new key in secret/$secret"
 kubectl -n "$ns" rollout restart --request-timeout="$timeout" "deployment/$deployment"
 kubectl -n "$ns" rollout status "deployment/$deployment" --timeout=5m
