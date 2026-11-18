@@ -129,6 +129,52 @@ own picks up the new key early. If `kubectl apply` changed the pod template, its
 `Recreate` stops every old pod first: after it, all pods share one key. This happens inside a deploy, which signs
 everyone out anyway.
 
+## Live proof
+
+Proven live on 2026-11-18 on the published 0.3.0 image (`sha256:8a10645f…`) in a kind cluster: no key in
+`env` or logs (searched by value), the key file `-r-------- 10001`, `/proc/1/environ` refused to the same user,
+no Secret volume in the server's container. To repeat it: `kubectl exec <pod> -c vkteams-mcp -- env`,
+`… -- ls -ln /run/vkteams-mcp`, `… -- cat /proc/1/environ`, and
+`kubectl get pod <pod> -o jsonpath='{.spec.containers[*].volumeMounts[*].name}'`.
+Run on 2026-11-19 against a real VK Teams server, following the steps below:
+
+| Step | Seen |
+|---|---|
+| sign in, `list_chats` | 3 chats |
+| `kill 1` in the server's container | `RESTARTS 1`, the same pod, exit 0 |
+| `list_chats` with the same token | 3 chats, no refresh, no sign-in: the session survived |
+| `new-key.sh` | a new pod |
+| the old access token on `/mcp` | `401`, `Bearer error="invalid_token", … resource_metadata="…/.well-known/oauth-protected-resource/mcp"` |
+| the old refresh token on `/token` | `401 invalid_client` |
+| a second sign-in, `list_chats` | 3 chats |
+
+It needs a person to sign in twice with an e-mailed code.
+
+| Step | Command | Expect |
+|---|---|---|
+| 1 | `kind create cluster --name vkkey`; `kubectl create ns vkkey` | |
+| 2 | the commands below the table: the manifest with a local address, one replica, the VK Teams host | |
+| 3 | `NAMESPACE=vkkey deploy/kubernetes/new-key.sh` | rollout done |
+| 4 | `kubectl -n vkkey port-forward deploy/vkteams-mcp 8795:8000` | |
+| 5 | `uv run python tests/live/e2e_oauth.py login http://localhost:8795`, sign in with the e-mailed code | `token saved` |
+| 6 | `uv run python tests/live/e2e_oauth.py call http://localhost:8795 list_chats '{}'` | chats |
+| 7 | `kubectl -n vkkey exec deploy/vkteams-mcp -c vkteams-mcp -- kill 1`; wait for `RESTARTS 1` | same pod |
+| 8 | restart the port-forward (it drops with the container), then step 6 again | chats, no sign-in: **the session survived** |
+| 9 | `NAMESPACE=vkkey deploy/kubernetes/new-key.sh`, restart the port-forward | new pod |
+| 10 | `curl -si -H "Authorization: Bearer <access_token from ~/.config/vkteams-mcp/e2e-token.json>" -X POST http://localhost:8795/mcp` | `401`, `WWW-Authenticate: … error="invalid_token" … resource_metadata=` |
+| 11 | steps 5 and 6 | a second sign-in works |
+| 12 | `kind delete cluster --name vkkey` | |
+
+Step 2, with `<host>` the VK Teams server's host name:
+
+```sh
+sed -e 's#value: https://vkteams-mcp.example.org#value: "http://localhost:8795"#' -e 's#replicas: 2#replicas: 1#' \
+  deploy/kubernetes/deployment.yaml | kubectl -n vkkey apply -f -
+kubectl -n vkkey set env deploy/vkteams-mcp VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1 VKTEAMS_MCP_INSTALLATIONS=<host>
+```
+
+`e2e_oauth.py` overwrites `~/.config/vkteams-mcp/e2e-token.json`: copy it aside first.
+
 ## What remains
 
 | Threat | Closed? |
