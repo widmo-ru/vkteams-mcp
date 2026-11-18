@@ -67,9 +67,12 @@ jobs:
           ref="$IMAGE:sha-$GITHUB_SHA"
           for platform in linux/amd64 linux/arm64; do
             docker rm -f mcp >/dev/null 2>&1 || true
+            docker volume rm -f key >/dev/null 2>&1 || true
+            docker volume create key >/dev/null
+            openssl rand -base64 48 | docker run --rm -i --platform "$platform" -v key:/run/vkteams-mcp \
+              --entrypoint sh "$ref" -c 'umask 277; cat > /run/vkteams-mcp/key'
             docker run -d --name mcp --platform "$platform" -p 127.0.0.1:8000:8000 \
-              -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org \
-              -e VKTEAMS_MCP_SECRET="$(openssl rand -base64 48)" "$ref"
+              -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -v key:/run/vkteams-mcp "$ref"
             for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1 && break; sleep 2; done
             curl -fsS http://127.0.0.1:8000/healthz
             uid="$(docker exec mcp id -u)"
@@ -78,6 +81,9 @@ jobs:
             got="$(docker exec mcp python -c 'import vkteams_mcp; print(vkteams_mcp.__version__)')"
             echo "$platform: uid $uid, version $got"
             test "$got" = "$v"
+            # the key file is readable by the server's user only; a failed stat fails the step
+            mode="$(docker exec mcp stat -c '%a %u' /run/vkteams-mcp/key)"
+            test "$mode" = "400 $uid"
           done
       - name: The staged image lists exactly amd64 and arm64, before any public tag moves
         run: |

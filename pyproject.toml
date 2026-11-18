@@ -1,6 +1,6 @@
 [project]
 name = "vkteams-mcp"
-version = "0.2.6"
+version = "0.3.0"
 description = "VK Teams connector for AI agents: one person's chats, messages and files over MCP, with the smallest context and tools that carry the logic."
 readme = "README.md"
 authors = [

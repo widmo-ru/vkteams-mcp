@@ -1,0 +1,84 @@
+# vkteams-mcp on Kubernetes. The sealing key reaches the server through an init container, so the
+# server's own container has no Secret volume and no variable with the key: `kubectl exec ... env` shows
+# nothing. The key sits in a memory-backed file readable by the server's user only, and the process makes
+# itself non-dumpable. The Secret itself is written by the deploy pipeline (new-key.sh).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vkteams-mcp
+  labels: {app.kubernetes.io/name: vkteams-mcp}
+spec:
+  # Every pod of one deploy reads the same Secret, so replicas are fine. Recreate keeps two keys from
+  # serving at once while a deploy rolls: with RollingUpdate a token from a new pod meets an old one.
+  replicas: 2
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: vkteams-mcp}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: vkteams-mcp}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # Copies the key from the Secret into memory-backed storage: mode 0400, owned by uid 10001 (runAsUser).
+        # The same image, so no second registry is needed for the pod to start.
+        - name: key
+          image: ghcr.io/widmo-ru/vkteams-mcp:0.3.0
+          command: ["install", "-m", "0400", "/secret/key", "/run/vkteams-mcp/key"]
+          securityContext: &locked
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: secret, mountPath: /secret, readOnly: true}
+            - {name: key, mountPath: /run/vkteams-mcp}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 32Mi}
+      containers:
+        - name: vkteams-mcp
+          image: ghcr.io/widmo-ru/vkteams-mcp:0.3.0
+          # reads /run/vkteams-mcp/key at start; no Secret volume here, no envFrom
+          env:
+            - {name: VKTEAMS_MCP_PUBLIC_URL, value: https://vkteams-mcp.example.org}
+          ports:
+            - {name: http, containerPort: 8000}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          # a restarted container reads the same file: everyone stays signed in
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+            failureThreshold: 4
+          securityContext: *locked
+          volumeMounts:
+            - {name: key, mountPath: /run/vkteams-mcp}
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: secret
+          secret:
+            secretName: vkteams-mcp-key
+            defaultMode: 0440  # group-readable: the init container runs as group 10001 (fsGroup)
+        - name: key
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vkteams-mcp
+  labels: {app.kubernetes.io/name: vkteams-mcp}
+spec:
+  selector: {app.kubernetes.io/name: vkteams-mcp}
+  ports:
+    - {name: http, port: 80, targetPort: http}

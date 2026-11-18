@@ -12,7 +12,8 @@ RUN uv export --frozen --no-dev --no-emit-project -o requirements.txt \
 FROM python:3.12-alpine
 RUN apk upgrade --no-cache \
  && pip uninstall -y pip \
- && adduser -D -u 10001 -s /sbin/nologin app
+ && adduser -D -u 10001 -s /sbin/nologin app \
+ && install -d -o 10001 -g 10001 -m 0700 /run/vkteams-mcp
 COPY --from=build /deps /opt/deps
 COPY --from=build /app /opt/app
 COPY LICENSE NOTICE /opt/

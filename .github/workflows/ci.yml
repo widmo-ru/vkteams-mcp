@@ -45,6 +45,8 @@ jobs:
     name: image builds and answers
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      KEY_BYTES: 48  # random bytes in the sealing key the probes generate
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,9 +56,14 @@ jobs:
       - name: Start and probe
         run: |
           set -euo pipefail
+          # the key arrives as a file, as an init container leaves it; it is piped, never in a variable
+          # (kept on the runner only so the next step can look for it by value)
+          openssl rand -base64 "$KEY_BYTES" | tr -d '\n' > "$RUNNER_TEMP/key"
+          docker volume create key-mcp >/dev/null
+          docker run --rm -i -v key-mcp:/run/vkteams-mcp --entrypoint sh vkteams-mcp:ci \
+            -c 'umask 277; cat > /run/vkteams-mcp/key' < "$RUNNER_TEMP/key"
           docker run -d --name mcp -p 127.0.0.1:8000:8000 \
-            -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org \
-            -e VKTEAMS_MCP_SECRET="$(openssl rand -base64 48)" \
+            -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -v key-mcp:/run/vkteams-mcp \
             vkteams-mcp:ci
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1; then break; fi
@@ -70,6 +77,54 @@ jobs:
           got="$(docker exec mcp id -u)"
           echo "image user: ${want:-<none>}, running as uid: $got"
           test -n "$want" && test "$got" = "$want" && test "$got" != 0
+      - name: The key is in its 0400 file and nowhere else, and survives a restart
+        run: |
+          set -euo pipefail
+          # the file stays for a restart, readable by the server's user only
+          got="$(docker exec mcp stat -c '%a %u' /run/vkteams-mcp/key)"
+          echo "key file: mode and owner $got"
+          test "$got" = "400 $(docker exec mcp id -u)"
+          # look for the key by value in what `kubectl exec` can see: env, the log
+          # the reference is the base64 of KEY_BYTES random bytes, or nothing below is checked
+          test "$(wc -c < "$RUNNER_TEMP/key" | tr -d ' ')" = "$(( 4 * ((KEY_BYTES + 2) / 3) ))"
+          docker exec mcp env > env.txt
+          docker logs mcp > log.txt 2>&1
+          grep -q '^VKTEAMS_MCP_PUBLIC_URL=' env.txt  # the environment really was read
+          grep -q 'session manager started' log.txt
+          for f in env.txt log.txt; do
+            # grep: 0 found, 1 not found, anything else is a check that did not run
+            rc=0; grep -qF -f "$RUNNER_TEMP/key" "$f" || rc=$?
+            echo "$f: $(wc -l < "$f") lines, grep $rc"
+            test "$rc" = 1
+          done
+          rm -f env.txt log.txt "$RUNNER_TEMP/key"
+          # non-dumpable: a process of the same user may not read the server's /proc entries. The kernel checks
+          # environ and mem the same way, and environ reads from offset 0, so a refusal there is the flag at work.
+          # (`a && b` cannot fail a step under set -e: each check is its own line.)
+          rc=0; docker exec mcp cat /proc/1/environ >/dev/null 2>err.txt || rc=$?
+          echo "reading the server's /proc/1/environ as its own user: exit $rc, $(cat err.txt)"
+          test "$rc" != 0
+          grep -q 'Permission denied' err.txt
+          rm -f err.txt
+          # a container restart reads the same file: a registration from before still signs in
+          cid="$(curl -fsS -H 'Host: mcp.example.org' -H 'Content-Type: application/json' \
+            -d '{"redirect_uris":["https://client.example.org/cb"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]}' \
+            http://127.0.0.1:8000/register | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')"
+          docker restart mcp >/dev/null
+          for _ in $(seq 1 30); do curl -fsS -m 2 http://127.0.0.1:8000/healthz >/dev/null 2>&1 && break; sleep 1; done
+          code="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'Host: mcp.example.org' \
+            "http://127.0.0.1:8000/authorize?response_type=code&client_id=$cid&redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb&state=s&code_challenge=$(printf 'x%.0s' {1..43})&code_challenge_method=S256")"
+          echo "after a restart: $code"
+          case "$code" in 302\ https://mcp.example.org/signin?request=*) ;; *) exit 1 ;; esac
+      - name: A leftover VKTEAMS_MCP_SECRET still starts the server, with a warning
+        run: |
+          set -euo pipefail
+          docker run -d --name legacy -p 127.0.0.1:8003:8000 \
+            -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -e VKTEAMS_MCP_SECRET="$(openssl rand -base64 48)" \
+            vkteams-mcp:ci
+          for _ in $(seq 1 30); do curl -fsS -m 2 http://127.0.0.1:8003/healthz >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8003/healthz
+          docker logs legacy 2>&1 | grep -q 'VKTEAMS_MCP_SECRET is deprecated and the next release refuses it'
       - name: No HIGH or CRITICAL vulnerability in the image
         run: |
           set -euo pipefail
@@ -97,14 +152,19 @@ jobs:
           # all, and the Debian base passed a fixable-only gate with 101 findings and no fix for any of them
           assert not found, "HIGH or CRITICAL findings in the image"
           PY
-      - name: Two replicas share nothing but the secret
+      - name: Two replicas share nothing but the key
         run: |
           set -euo pipefail
-          secret="$(openssl rand -base64 48)"
+          # one key, as one deploy's Secret, copied to each replica the way each pod's init container does
+          openssl rand -base64 48 | tr -d '\n' > key.txt
           for n in 1 2; do
+            docker volume create "key-r$n" >/dev/null
+            docker run --rm -i -v "key-r$n:/run/vkteams-mcp" --entrypoint sh vkteams-mcp:ci \
+              -c 'umask 277; cat > /run/vkteams-mcp/key' < key.txt
             docker run -d --name "r$n" -p "127.0.0.1:800$n:8000" \
-              -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -e VKTEAMS_MCP_SECRET="$secret" vkteams-mcp:ci
+              -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -v "key-r$n:/run/vkteams-mcp" vkteams-mcp:ci
           done
+          rm key.txt
           for n in 1 2; do
             up=""
             for _ in $(seq 1 30); do

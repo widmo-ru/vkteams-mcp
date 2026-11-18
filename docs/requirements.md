@@ -147,6 +147,21 @@ partial result: the tool reports who failed and why.
 | a cursor from the same tool but another list (filter, chat, query) | tests/unit/test_qa_regressions.py::test_a_list_chats_cursor_is_bound_to_its_filter |
 | a message id given as a JSON number | tests/unit/test_qa_regressions.py::test_a_message_id_given_as_a_number_is_refused |
 
+### The sealing key
+
+| Refusal | Test |
+|---|---|
+| starting with no key file and no VKTEAMS_MCP_SECRET | tests/unit/test_key.py::test_a_missing_key_file_refuses_to_start_and_says_why |
+| a key file the group or anyone else can read | tests/unit/test_key.py::test_a_key_file_readable_by_others_is_refused |
+| a key file owned by another user | tests/unit/test_key.py::test_a_key_file_of_another_user_is_refused |
+| starting on Linux when prctl(PR_SET_DUMPABLE) is refused | tests/unit/test_key.py::test_the_server_does_not_start_when_linux_refuses_non_dumpable |
+| a key path that is not a regular file (a FIFO would block the start) | tests/unit/test_key.py::test_a_key_path_that_is_a_fifo_is_refused_without_blocking |
+| a key shorter than 32 characters | tests/unit/test_key.py::test_a_short_key_in_the_file_is_refused |
+| a key file that is a directory or unreadable | tests/unit/test_key.py::test_a_key_path_that_is_not_a_readable_file_says_so_without_a_traceback |
+| a key file that is not UTF-8 text | tests/unit/test_key.py::test_a_key_that_is_not_text_is_refused |
+| a key longer than 4096 bytes, rather than a shortened one | tests/unit/test_key.py::test_a_key_longer_than_the_limit_is_refused_not_shortened |
+| a token, refresh or registration sealed under a previous deploy's key | tests/unit/test_key.py::test_a_new_key_signs_everyone_out_once_and_they_sign_in_again |
+
 ### Sending and changing
 
 | Refusal | Test |

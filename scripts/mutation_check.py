@@ -687,6 +687,42 @@ MUTATIONS = [
         ],
         ["tests/unit/test_replicas.py::test_a_full_code_cache_still_refuses_the_newest_replay"],
     ),
+    (
+        "a key file readable by others is refused",
+        "config.py",
+        [("        if mode & 0o077:", "        if False:")],
+        ["tests/unit/test_key.py::test_a_key_file_readable_by_others_is_refused"],
+    ),
+    (
+        "no start on Linux without non-dumpable",
+        "app.py",
+        [("    if dumpable is False:", "    if False:")],
+        ["tests/unit/test_key.py::test_the_server_does_not_start_when_linux_refuses_non_dumpable"],
+    ),
+    (
+        "a key file of another user is refused",
+        "config.py",
+        [("        if st.st_uid != os.geteuid():", "        if False:")],
+        ["tests/unit/test_key.py::test_a_key_file_of_another_user_is_refused"],
+    ),
+    (
+        "a key longer than the limit is refused, not shortened",
+        "config.py",
+        [("        if len(raw) > MAX_KEY:", "        if False:")],
+        ["tests/unit/test_key.py::test_a_key_longer_than_the_limit_is_refused_not_shortened"],
+    ),
+    (
+        "the key is left out of the settings' repr",
+        "config.py",
+        [("    secret: str = field(repr=False)", "    secret: str")],
+        ["tests/unit/test_key.py::test_the_key_is_in_no_environment_variable_file_or_log_line"],
+    ),
+    (
+        "a leftover VKTEAMS_MCP_SECRET leaves the process environment",
+        "config.py",
+        [('        os.environ.pop("VKTEAMS_MCP_SECRET", None)', "        pass")],
+        ["tests/unit/test_key.py::test_the_secret_variable_is_dropped_from_the_process_environment"],
+    ),
 ]
 
 

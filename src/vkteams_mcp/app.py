@@ -1,7 +1,9 @@
 """The process: one Starlette app with the MCP endpoint, OAuth, the sign-in page and file links. It keeps
-no state between requests (`core.seal`), so any number of replicas sharing VKTEAMS_MCP_SECRET serve it.
+no state between requests (`core.seal`), so any number of replicas sharing one sealing key serve it.
 
-VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org VKTEAMS_MCP_SECRET=... vkteams-mcp
+VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org VKTEAMS_MCP_KEY_FILE=/run/vkteams-mcp/key vkteams-mcp
+
+In Kubernetes an init container puts the key file there (`config`); the process makes itself non-dumpable.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from starlette.responses import JSONResponse, Response
 from vkteams_mcp.api.client import VK
 from vkteams_mcp.api.egress import PublicOnlyTransport
 from vkteams_mcp.api.session import VKSession
-from vkteams_mcp.config import Settings
+from vkteams_mcp.config import ConfigError, Settings, make_undumpable
 from vkteams_mcp.core import context
 from vkteams_mcp.links import routes as link_routes
 from vkteams_mcp.links.links import Links
@@ -97,7 +99,17 @@ def main() -> None:
         level=logging.INFO, format='{"level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}', style="%"
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    settings = Settings.from_env()
+    try:
+        settings = Settings.from_env()
+    except ConfigError as err:  # one line that says what to do, not a traceback
+        log.error("%s", err)
+        raise SystemExit(2) from None
+    dumpable = make_undumpable()
+    if dumpable is False:  # on Linux the protection is promised, so no protection is no start
+        log.error("the process could not be made non-dumpable (prctl PR_SET_DUMPABLE refused): not starting")
+        raise SystemExit(2)
+    if dumpable is None:
+        log.warning("not Linux: the process is not made non-dumpable, its memory is readable to its own user")
     app, _, _ = build(settings)
     uvicorn.run(
         app,

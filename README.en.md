@@ -124,20 +124,34 @@ claude mcp add --transport http vkteams https://vkteams-mcp.example.org/mcp
 A ready image for linux/amd64 and linux/arm64 is in the GitHub Container Registry; versions are in
 [CHANGELOG.md](CHANGELOG.md) and on the [releases](https://github.com/widmo-ru/vkteams-mcp/releases) page.
 
+The key the server seals sessions with arrives as a file with mode 0400, not as an environment variable: it is
+in no `env` and no log, and the process is closed to memory reads. On Kubernetes an init container puts the file there from a
+Secret, and a step you add to your deploy pipeline writes the Secret on every deploy:
+[deploy/README.en.md](deploy/README.en.md). A new key signs
+everyone out, once.
+
+Docker works the same way: a short-lived container puts the key in a volume. That volume is on disk; on
+Kubernetes the key is in memory (emptyDir `medium: Memory`).
+
 ```sh
-openssl rand -base64 48 > vkteams-mcp.secret   # once, the same for every replica; a new secret signs everyone out
-docker run -p 127.0.0.1:8000:8000 \
+docker volume create vkteams-mcp-key
+openssl rand -base64 48 | docker run --rm -i -v vkteams-mcp-key:/run/vkteams-mcp --entrypoint sh \
+  ghcr.io/widmo-ru/vkteams-mcp:0.3.0 -c 'umask 277; cat > /run/vkteams-mcp/key'
+docker run -p 127.0.0.1:8000:8000 -v vkteams-mcp-key:/run/vkteams-mcp \
   -e VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org \
-  -e VKTEAMS_MCP_SECRET="$(cat vkteams-mcp.secret)" \
-  ghcr.io/widmo-ru/vkteams-mcp:0.2.6
+  ghcr.io/widmo-ru/vkteams-mcp:0.3.0
 ```
+
+Restarting the container reads the same file: sessions are kept. The key is read only at start: to change it,
+put a new one in the volume and restart the server (every replica); then everyone signs in again.
 
 To build the image yourself: `docker build -t vkteams-mcp .`.
 
 | Variable | Meaning |
 |---|---|
 | `VKTEAMS_MCP_PUBLIC_URL` | The https address clients reach this server on (required) |
-| `VKTEAMS_MCP_SECRET` | At least 32 random characters; seals sessions and signs cursors (required; keep it). A new secret disconnects everyone: on the next sign-in the browser shows a page saying to clear the connector's authorization in the AI app and connect again |
+| `VKTEAMS_MCP_KEY_FILE` | The key file, at least 32 random characters (default `/run/vkteams-mcp/key`). Owner-only (0400): a file the group or everyone can read is refused. Without the file (and without the deprecated variable below) it does not start; the error messages are in [deploy/README.en.md](deploy/README.en.md#when-the-server-does-not-start). The key seals sessions and signs cursors. A new key signs everyone out |
+| `VKTEAMS_MCP_SECRET` | Deprecated: a key in a variable is visible to anyone who can `kubectl exec … env`. In 0.3.x it is used when there is no key file, with a warning in the log; the next release refuses to start |
 | `VKTEAMS_MCP_INSTALLATIONS` | Comma-separated VK Teams hosts this connector serves; with one host, the sign-in page asks only the e-mail |
 | `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS` | `1` when the server runs inside a company network next to its VK Teams |
 | `VKTEAMS_MCP_AREAS` | Areas to publish (default all but `chat_admin`) |
@@ -149,7 +163,7 @@ The container speaks plain HTTP on port 8000. Put a reverse proxy that terminate
 `VKTEAMS_MCP_PUBLIC_URL` in front of it: OAuth and sign-in codes must travel over HTTPS.
 
 The server keeps nothing and has no database. What the next step needs travels in a sealed blob (AES-GCM,
-key from `VKTEAMS_MCP_SECRET`), carried by whoever needs it:
+under the deploy's key), carried by whoever needs it:
 
 | What | Where it lives | How long |
 |---|---|---|
@@ -161,12 +175,12 @@ key from `VKTEAMS_MCP_SECRET`), carried by whoever needs it:
 | the rate allowance | in each replica's memory | until a restart |
 | a fresh `aimsid` | in each replica's memory, as a cache | an hour |
 
-So any number of replicas can run; they share one secret. Sending the same draft again posts nothing twice:
+So any number of replicas can run; they share one deploy's key. Sending the same draft again posts nothing twice:
 VK Teams merges messages with the same `localMsgId`, and the server checks scheduled text against the queue.
 Two exceptions: a scheduled poll or reply with a quote is queued again on a resend, and so may a scheduled draft
 sent at the same moment from two replicas.
 Each replica counts the rate allowance itself. Disconnecting ends the session in VK Teams, which kills every
-token carrying it; a single token cannot be revoked before it expires. Changing the secret signs everyone out.
+token carrying it; a single token cannot be revoked before it expires. A new key (every deploy) signs everyone out.
 
 Most corporate VK Teams servers answer only inside the company network. Run the connector
 there, pinned to that one installation, with `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1`.
