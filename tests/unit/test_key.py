@@ -1,6 +1,7 @@
-"""The sealing key: delivered by an init container as a file in a memory-backed volume, read once at
-start and deleted, so nothing `kubectl exec` can reach in the server's container holds it. A new key is a
-new deploy: every token sealed under the old one is refused, and the client signs in again."""
+"""The sealing key: delivered by an init container as a file in a memory-backed volume, 0400 and owned by
+the server's user, never in an environment variable or a log. The file stays, so a container restarted in
+the same pod keeps everyone signed in. A new key is a new deploy: every token sealed under the old one is
+refused, and the client signs in again."""
 
 from __future__ import annotations
 
@@ -43,17 +44,45 @@ def everything_written_under(path) -> list[bytes]:
     return out
 
 
-def test_the_key_is_read_from_the_file_and_the_file_is_deleted(tmp_path):
+def test_the_key_is_read_from_the_file_which_stays_for_a_restart(tmp_path):
     f = key_file(tmp_path, KEY_A)
-    s = Settings.from_env(env_with(f))
-    assert s.secret == KEY_A
-    assert not f.exists()
-    assert list(f.parent.iterdir()) == []
+    assert Settings.from_env(env_with(f)).secret == KEY_A
+    assert f.exists() and stat.S_IMODE(f.stat().st_mode) == 0o400
+    assert Settings.from_env(env_with(f)).secret == KEY_A  # a restarted container reads the same key
+
+
+@pytest.mark.parametrize("mode", [0o440, 0o404, 0o600 | 0o004, 0o640])
+def test_a_key_file_readable_by_others_is_refused(tmp_path, mode):
+    f = key_file(tmp_path, KEY_A, mode=mode)
+    with pytest.raises(ConfigError) as e:
+        Settings.from_env(env_with(f))
+    assert "readable by others" in str(e.value) and KEY_A not in str(e.value)
+
+
+def test_the_process_is_made_non_dumpable_on_linux():
+    """Another process of the same user cannot read the key from /proc/<pid>/mem once this is set."""
+    import subprocess
+    import sys
+
+    code = (
+        "import ctypes, sys\n"
+        "from vkteams_mcp.config import make_undumpable\n"
+        "ok = make_undumpable()\n"
+        "if sys.platform.startswith('linux'):\n"
+        "    print(ok, ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))\n"
+        "else:\n"
+        "    print(ok, 'n/a')\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.split()
+    if sys.platform.startswith("linux"):
+        assert out == ["True", "0"]
+    else:
+        assert out == ["False", "n/a"]
 
 
 def test_the_key_is_in_no_environment_variable_file_or_log_line(tmp_path, monkeypatch, caplog):
-    """The whole start of the process, as `main()` runs it: settings from the real environment, the app,
-    a request. The key must be in memory and nowhere a person with `kubectl exec` can look."""
+    """The whole start of the process, as `main()` runs it: settings from the real environment, the app.
+    The key must be in memory and in its 0400 file, and in no variable, other file or log line."""
     caplog.set_level(logging.DEBUG)
     f = key_file(tmp_path, KEY_A)
     monkeypatch.setenv("VKTEAMS_MCP_PUBLIC_URL", PUBLIC)
@@ -65,6 +94,7 @@ def test_the_key_is_in_no_environment_variable_file_or_log_line(tmp_path, monkey
     app, _, _ = build(s, http=httpx.AsyncClient())
     assert s.secret == KEY_A  # it is in memory
     assert not any(KEY_A in v for v in os.environ.values())
+    f.unlink()  # the one file that holds it by design; nothing else under the working folder may
     assert not any(KEY_A.encode() in b for b in everything_written_under(tmp_path))
     assert KEY_A not in repr(s) and KEY_A not in str(s)
     logged = "\n".join(r.getMessage() for r in caplog.records)
@@ -75,21 +105,7 @@ def test_a_missing_key_file_refuses_to_start_and_says_why(tmp_path):
     with pytest.raises(ConfigError) as e:
         Settings.from_env(env_with(tmp_path / "absent"))
     msg = str(e.value)
-    assert str(tmp_path / "absent") in msg and "init container" in msg and "delete the pod" in msg
-
-
-def test_a_key_file_that_cannot_be_deleted_refuses_to_start(tmp_path):
-    """A Secret mounted straight into this container is read-only: the key would stay readable to anyone
-    with `kubectl exec`, which is exactly what the init container is there to prevent."""
-    f = key_file(tmp_path, KEY_A)
-    f.parent.chmod(0o500)
-    try:
-        with pytest.raises(ConfigError) as e:
-            Settings.from_env(env_with(f))
-    finally:
-        f.parent.chmod(0o700)
-    assert "could not be deleted" in str(e.value) and "init container" in str(e.value)
-    assert KEY_A not in str(e.value)
+    assert str(tmp_path / "absent") in msg and "init container" in msg
 
 
 def test_a_key_path_that_is_not_a_readable_file_says_so_without_a_traceback(tmp_path):
@@ -99,13 +115,13 @@ def test_a_key_path_that_is_not_a_readable_file_says_so_without_a_traceback(tmp_
     assert "could not be read" in str(e.value)
 
 
-def test_a_key_that_is_not_text_is_refused_and_still_deleted(tmp_path):
+def test_a_key_that_is_not_text_is_refused(tmp_path):
     f = tmp_path / "key"
     f.write_bytes(b"\xff\xfe" * 40)
+    f.chmod(0o400)
     with pytest.raises(ConfigError) as e:
         Settings.from_env(env_with(f))
     assert "not text" in str(e.value)
-    assert not f.exists()
 
 
 def test_a_key_longer_than_the_limit_is_refused_not_shortened(tmp_path):
@@ -113,20 +129,21 @@ def test_a_key_longer_than_the_limit_is_refused_not_shortened(tmp_path):
 
     ok = tmp_path / "ok"
     ok.write_text("k" * MAX_KEY)  # the limit counts the file's bytes
+    ok.chmod(0o400)
     assert Settings.from_env(env_with(ok)).secret == "k" * MAX_KEY
     f = tmp_path / "long"
     f.write_text("k" * (MAX_KEY + 1))
+    f.chmod(0o400)
     with pytest.raises(ConfigError) as e:
         Settings.from_env(env_with(f))
-    assert "longer than" in str(e.value) and not f.exists()
+    assert "longer than" in str(e.value)
 
 
-def test_a_short_key_in_the_file_is_refused_and_still_deleted(tmp_path):
+def test_a_short_key_in_the_file_is_refused(tmp_path):
     f = key_file(tmp_path, "too-short")
     with pytest.raises(ConfigError) as e:
         Settings.from_env(env_with(f))
     assert "32" in str(e.value) and "too-short" not in str(e.value)
-    assert not f.exists()
 
 
 def test_a_leftover_secret_variable_still_starts_the_server_with_a_warning(tmp_path, monkeypatch, caplog):
@@ -172,7 +189,7 @@ def an_app(fake, key: str):
 
 
 async def test_a_restart_with_the_same_key_keeps_everyone_signed_in(fake):
-    """A pod restarted without a deploy: its init container copies the same Secret again."""
+    """A container or a pod restarted without a deploy: the same file, or the same Secret copied again."""
     async with serve(an_app(fake, KEY_A)) as web:
         tok = await full_flow(web, fake)
     async with serve(an_app(fake, KEY_A)) as web:

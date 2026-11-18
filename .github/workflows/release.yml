@@ -81,9 +81,9 @@ jobs:
             got="$(docker exec mcp python -c 'import vkteams_mcp; print(vkteams_mcp.__version__)')"
             echo "$platform: uid $uid, version $got"
             test "$got" = "$v"
-            # the key file was read and deleted; a failed listing fails the step, it is not an empty one
-            left="$(docker exec mcp ls -A /run/vkteams-mcp)"
-            test -z "$left"
+            # the key file is readable by the server's user only; a failed stat fails the step
+            mode="$(docker exec mcp stat -c '%a %u' /run/vkteams-mcp/key)"
+            test "$mode" = "400 $uid"
           done
       - name: The staged image lists exactly amd64 and arm64, before any public tag moves
         run: |

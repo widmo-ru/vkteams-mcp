@@ -77,35 +77,45 @@ jobs:
           got="$(docker exec mcp id -u)"
           echo "image user: ${want:-<none>}, running as uid: $got"
           test -n "$want" && test "$got" = "$want" && test "$got" != 0
-      - name: The key is read once and left nowhere
+      - name: The key is in its 0400 file and nowhere else, and survives a restart
         run: |
           set -euo pipefail
-          # the file is gone, and the server still serves: the key is in its memory and nowhere else
-          left="$(docker exec mcp ls -A /run/vkteams-mcp)"
-          echo "left in /run/vkteams-mcp: ${left:-nothing}"
-          test -z "$left"
-          # look for the key by value in what `kubectl exec` can see: env, the server's environment, the log
+          # the file stays for a restart, readable by the server's user only
+          got="$(docker exec mcp stat -c '%a %u' /run/vkteams-mcp/key)"
+          echo "key file: mode and owner $got"
+          test "$got" = "400 $(docker exec mcp id -u)"
+          # look for the key by value in what `kubectl exec` can see: env, the log
           # the reference is the base64 of KEY_BYTES random bytes, or nothing below is checked
           test "$(wc -c < "$RUNNER_TEMP/key" | tr -d ' ')" = "$(( 4 * ((KEY_BYTES + 2) / 3) ))"
           docker exec mcp env > env.txt
-          docker exec mcp sh -c 'tr "\0" "\n" < /proc/1/environ' > environ.txt
           docker logs mcp > log.txt 2>&1
-          for f in env.txt environ.txt; do grep -q '^VKTEAMS_MCP_PUBLIC_URL=' "$f"; done  # each was really read
+          grep -q '^VKTEAMS_MCP_PUBLIC_URL=' env.txt  # the environment really was read
           grep -q 'session manager started' log.txt
-          for f in env.txt environ.txt log.txt; do
+          for f in env.txt log.txt; do
             # grep: 0 found, 1 not found, anything else is a check that did not run
             rc=0; grep -qF -f "$RUNNER_TEMP/key" "$f" || rc=$?
             echo "$f: $(wc -l < "$f") lines, grep $rc"
             test "$rc" = 1
           done
-          rm -f env.txt environ.txt log.txt "$RUNNER_TEMP/key"
-          curl -fsS http://127.0.0.1:8000/healthz
-          # a container started again without the file says what to do and stops, rather than serving
+          rm -f env.txt log.txt "$RUNNER_TEMP/key"
+          # non-dumpable: a process of the same user may not read the server's /proc entries. The kernel checks
+          # environ and mem the same way, and environ reads from offset 0, so a refusal there is the flag at work.
+          # (`a && b` cannot fail a step under set -e: each check is its own line.)
+          rc=0; docker exec mcp cat /proc/1/environ >/dev/null 2>err.txt || rc=$?
+          echo "reading the server's /proc/1/environ as its own user: exit $rc, $(cat err.txt)"
+          test "$rc" != 0
+          grep -q 'Permission denied' err.txt
+          rm -f err.txt
+          # a container restart reads the same file: a registration from before still signs in
+          cid="$(curl -fsS -H 'Host: mcp.example.org' -H 'Content-Type: application/json' \
+            -d '{"redirect_uris":["https://client.example.org/cb"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]}' \
+            http://127.0.0.1:8000/register | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')"
           docker restart mcp >/dev/null
-          for _ in $(seq 1 20); do test "$(docker inspect -f '{{.State.Status}}' mcp)" = exited && break; sleep 1; done
-          docker inspect -f 'restarted without the key: {{.State.Status}}, exit {{.State.ExitCode}}' mcp
-          test "$(docker inspect -f '{{.State.ExitCode}}' mcp)" = 2
-          docker logs mcp 2>&1 | tail -1 | grep -q 'no sealing key: /run/vkteams-mcp/key does not exist'
+          for _ in $(seq 1 30); do curl -fsS -m 2 http://127.0.0.1:8000/healthz >/dev/null 2>&1 && break; sleep 1; done
+          code="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'Host: mcp.example.org' \
+            "http://127.0.0.1:8000/authorize?response_type=code&client_id=$cid&redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb&state=s&code_challenge=$(printf 'x%.0s' {1..43})&code_challenge_method=S256")"
+          echo "after a restart: $code"
+          case "$code" in 302\ https://mcp.example.org/signin?request=*) ;; *) exit 1 ;; esac
       - name: A leftover VKTEAMS_MCP_SECRET still starts the server, with a warning
         run: |
           set -euo pipefail

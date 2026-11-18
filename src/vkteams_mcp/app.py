@@ -3,7 +3,7 @@ no state between requests (`core.seal`), so any number of replicas sharing one s
 
 VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org VKTEAMS_MCP_KEY_FILE=/run/vkteams-mcp/key vkteams-mcp
 
-The key file is deleted once read (`config`); in Kubernetes an init container puts it there on every pod start.
+In Kubernetes an init container puts the key file there (`config`); the process makes itself non-dumpable.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from starlette.responses import JSONResponse, Response
 from vkteams_mcp.api.client import VK
 from vkteams_mcp.api.egress import PublicOnlyTransport
 from vkteams_mcp.api.session import VKSession
-from vkteams_mcp.config import ConfigError, Settings
+from vkteams_mcp.config import ConfigError, Settings, make_undumpable
 from vkteams_mcp.core import context
 from vkteams_mcp.links import routes as link_routes
 from vkteams_mcp.links.links import Links
@@ -104,6 +104,8 @@ def main() -> None:
     except ConfigError as err:  # one line that says what to do, not a traceback
         log.error("%s", err)
         raise SystemExit(2) from None
+    if not make_undumpable():
+        log.warning("the process could not be made non-dumpable: its memory is readable to its own user")
     app, _, _ = build(settings)
     uvicorn.run(
         app,

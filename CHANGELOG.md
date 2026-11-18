@@ -2,17 +2,21 @@
 
 ## 0.3.0 (2026-11-18)
 
-The sealing key lives only in the server's memory.
+The sealing key leaves the environment.
 
-- The key arrives as a file, `VKTEAMS_MCP_KEY_FILE` (default `/run/vkteams-mcp/key`), which the server reads
-  at start and deletes. In Kubernetes an init container copies it there from a Secret into an emptyDir with
-  `medium: Memory`; the server's container gets no Secret volume and no variable, so `kubectl exec … env` and
-  `ls` there show nothing. Without the file the server does not start and says why; a file it cannot delete,
-  such as a Secret mounted straight into its container, is refused too.
+- The key arrives as a file, `VKTEAMS_MCP_KEY_FILE` (default `/run/vkteams-mcp/key`), mode 0400 and owned by the
+  server's user. In Kubernetes an init container copies it there from a Secret into an emptyDir with
+  `medium: Memory`; the server's container gets no Secret volume and no variable, so `kubectl exec … env` shows
+  nothing. The file stays, so a container restarted inside the pod (an OOM kill, a crash, a liveness probe)
+  keeps everyone signed in. Without the file the server does not start and says why; a file the group or
+  anyone else can read is refused.
+- The process makes itself non-dumpable (`PR_SET_DUMPABLE=0`) on Linux: another process of the same user cannot
+  read its memory through `/proc/<pid>/mem` or ptrace. What remains is `kubectl exec` into the server's
+  container reading the file as the same user: that is closed by the cluster's RBAC on `pods/exec`.
 - The deploy pipeline writes a new random key into the Secret on every deploy: `deploy/kubernetes/new-key.sh`
   for any CI, `deploy/helm/secret.yaml` for Helm and werf. **Every deploy signs everyone out once**: old tokens
   get 401 `invalid_token` with `resource_metadata`, the old registration gets `invalid_client`, and the client
-  signs in again. A pod restarted without a deploy reads the same Secret and keeps everyone signed in.
+  signs in again. A pod restarted or rescheduled without a deploy reads the same Secret and keeps everyone signed in.
   Replicas are fine; `strategy: Recreate` keeps two keys from serving during a rollout.
 - **`VKTEAMS_MCP_SECRET` is deprecated.** In 0.3.x it is still used when there is no key file, with a warning
   in the log, so an upgrade with unchanged manifests neither crash-loops nor signs anyone out; when a key file

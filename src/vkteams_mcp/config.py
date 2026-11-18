@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
+import sys
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -14,8 +16,8 @@ from vkteams_mcp.registry import parse_areas
 # (products/myteam/config.json). An operator with an id of their own sets VKTEAMS_MCP_DEV_ID.
 DEFAULT_DEV_ID = "ic1DcTU-u6i6jrDP"
 
-# Where the init container leaves the sealing key: a file in an emptyDir with `medium: Memory`. The server
-# reads it once and deletes it, so the key stays in this process's memory and nowhere `kubectl exec` reaches.
+# Where the init container leaves the sealing key: a file in an emptyDir with `medium: Memory`, mode 0400,
+# owned by the server's user. The server reads it at start; it is in no environment variable and no log.
 DEFAULT_KEY_FILE = "/run/vkteams-mcp/key"
 MAX_KEY = 4096
 
@@ -37,7 +39,10 @@ def _zone(name: str) -> str:
 
 
 def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
-    """The sealing key, taken from the file the init container wrote, which is then deleted.
+    """The sealing key, read from the file the init container wrote.
+
+    The file stays, so a container restarted inside the same pod finds the same key and keeps everyone
+    signed in. It must be readable by its owner only: a key the group or anyone else can read is refused.
 
     For one release a leftover VKTEAMS_MCP_SECRET still works, with a warning, so a deployment upgraded
     without its manifests changed keeps running and keeps its sessions. Either way the variable is dropped
@@ -48,40 +53,37 @@ def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
         os.environ.pop("VKTEAMS_MCP_SECRET", None)
     try:
         with open(path, "rb") as f:
+            mode = os.fstat(f.fileno()).st_mode
             raw = f.read(MAX_KEY + 1)
     except FileNotFoundError:
-        if legacy:
-            log.warning(
-                "VKTEAMS_MCP_SECRET is deprecated and the next release refuses it: it is visible to anyone who "
-                "can run `kubectl exec ... env`. Deliver the key as a file through an init container (README, "
-                "Kubernetes). Using it for now; no file at %s",
-                path,
-            )
-            key = legacy
-        else:
+        if not legacy:
             raise ConfigError(
-                f"no sealing key: {path} does not exist (VKTEAMS_MCP_KEY_FILE). The init container copies it "
-                "there from the Secret before the server starts, and the server deletes it once read, so a "
-                "container restarted inside the same pod finds it gone: delete the pod, and its init container "
-                "copies the key again"
+                f"no sealing key: {path} does not exist (VKTEAMS_MCP_KEY_FILE). In Kubernetes an init container "
+                "copies it there from the Secret before the server starts"
             ) from None
+        log.warning(
+            "VKTEAMS_MCP_SECRET is deprecated and the next release refuses it: it is visible to anyone who "
+            "can run `kubectl exec ... env`. Deliver the key as a file through an init container (README, "
+            "Kubernetes). Using it for now; no file at %s",
+            path,
+        )
+        key: str | None = legacy
     except OSError as err:  # a directory, no permission: say so without a traceback
         raise ConfigError(f"the sealing key in {path} could not be read ({err.strerror})") from None
     else:
+        if not stat.S_ISREG(mode):
+            raise ConfigError(f"the sealing key in {path} is not a regular file")
+        if mode & 0o077:
+            raise ConfigError(
+                f"the sealing key in {path} is readable by others (mode {stat.S_IMODE(mode):04o}): it must be 0400, "
+                "owned by the server's user, as `install -m 0400` in the init container leaves it"
+            )
+        if len(raw) > MAX_KEY:
+            raise ConfigError(f"the sealing key in {path} is longer than {MAX_KEY} bytes")
         try:
             key = raw.decode("utf-8").strip()
         except UnicodeDecodeError:
             key = None
-        try:
-            os.unlink(path)
-        except OSError as err:
-            raise ConfigError(
-                f"the sealing key in {path} could not be deleted ({err.strerror}), and it must not stay readable: "
-                "mount the Secret only into the init container and give this container an emptyDir "
-                "(medium: Memory) it can write"
-            ) from None
-        if len(raw) > MAX_KEY:  # never a silently shortened key: the file is gone, so say so
-            raise ConfigError(f"the sealing key in {path} is longer than {MAX_KEY} bytes")
         if legacy:
             log.warning("VKTEAMS_MCP_SECRET is ignored: the key comes from %s. Remove the variable", path)
     if key is None:
@@ -89,6 +91,20 @@ def _take_key(e: dict[str, str] | os._Environ[str]) -> str:
     if len(key) < 32:
         raise ConfigError("the sealing key must be at least 32 random characters")
     return key
+
+
+def make_undumpable() -> bool:
+    """Linux: mark this process non-dumpable, so another process of the same user cannot read its memory
+    through /proc/<pid>/mem or ptrace, nor its environment through /proc/<pid>/environ. True when it is set."""
+    if not sys.platform.startswith("linux"):
+        return False
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    pr_get_dumpable, pr_set_dumpable = 3, 4
+    if libc.prctl(pr_set_dumpable, 0, 0, 0, 0) != 0:
+        return False
+    return libc.prctl(pr_get_dumpable, 0, 0, 0, 0) == 0
 
 
 @dataclass(frozen=True)

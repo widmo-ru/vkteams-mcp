@@ -1,6 +1,7 @@
 # vkteams-mcp on Kubernetes. The sealing key reaches the server through an init container, so the
-# server's own container has no Secret volume and no variable with the key: `kubectl exec ... env`
-# and `ls` there show nothing. The Secret itself is written by the deploy pipeline (new-key.sh).
+# server's own container has no Secret volume and no variable with the key: `kubectl exec ... env` shows
+# nothing. The key sits in a memory-backed file readable by the server's user only, and the process makes
+# itself non-dumpable. The Secret itself is written by the deploy pipeline (new-key.sh).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,7 +26,7 @@ spec:
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       initContainers:
-        # Copies the key from the Secret into memory-backed storage, readable by the server's user only.
+        # Copies the key from the Secret into memory-backed storage: mode 0400, owned by uid 10001 (runAsUser).
         # The same image, so no second registry is needed for the pod to start.
         - name: key
           image: ghcr.io/widmo-ru/vkteams-mcp:0.3.0
@@ -43,15 +44,18 @@ spec:
       containers:
         - name: vkteams-mcp
           image: ghcr.io/widmo-ru/vkteams-mcp:0.3.0
-          # reads /run/vkteams-mcp/key once at start and deletes it; no Secret here, no envFrom
+          # reads /run/vkteams-mcp/key at start; no Secret volume here, no envFrom
           env:
             - {name: VKTEAMS_MCP_PUBLIC_URL, value: https://vkteams-mcp.example.org}
           ports:
             - {name: http, containerPort: 8000}
           readinessProbe:
             httpGet: {path: /healthz, port: http}
-          # No livenessProbe: the key file is gone once read, so a container restarted inside the same pod
-          # cannot start again (it says so and asks for the pod to be deleted). Let a stuck pod be replaced.
+          # a restarted container reads the same file: everyone stays signed in
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+            failureThreshold: 4
           securityContext: *locked
           volumeMounts:
             - {name: key, mountPath: /run/vkteams-mcp}

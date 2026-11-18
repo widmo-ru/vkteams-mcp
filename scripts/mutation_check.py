@@ -688,13 +688,16 @@ MUTATIONS = [
         ["tests/unit/test_replicas.py::test_a_full_code_cache_still_refuses_the_newest_replay"],
     ),
     (
-        "the key file is deleted once read",
+        "a key file readable by others is refused",
         "config.py",
-        [("            os.unlink(path)\n", "            pass\n")],
-        [
-            "tests/unit/test_key.py::test_the_key_is_read_from_the_file_and_the_file_is_deleted",
-            "tests/unit/test_key.py::test_a_short_key_in_the_file_is_refused_and_still_deleted",
-        ],
+        [("        if mode & 0o077:", "        if False:")],
+        ["tests/unit/test_key.py::test_a_key_file_readable_by_others_is_refused"],
+    ),
+    (
+        "a key longer than the limit is refused, not shortened",
+        "config.py",
+        [("        if len(raw) > MAX_KEY:", "        if False:")],
+        ["tests/unit/test_key.py::test_a_key_longer_than_the_limit_is_refused_not_shortened"],
     ),
     (
         "the key is left out of the settings' repr",
