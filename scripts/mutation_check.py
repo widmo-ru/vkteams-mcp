@@ -694,6 +694,12 @@ MUTATIONS = [
         ["tests/unit/test_key.py::test_a_key_file_readable_by_others_is_refused"],
     ),
     (
+        "no start on Linux without non-dumpable",
+        "app.py",
+        [("    if dumpable is False:", "    if False:")],
+        ["tests/unit/test_key.py::test_the_server_does_not_start_when_linux_refuses_non_dumpable"],
+    ),
+    (
         "a key file of another user is refused",
         "config.py",
         [("        if st.st_uid != os.geteuid():", "        if False:")],

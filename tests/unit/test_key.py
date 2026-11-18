@@ -75,6 +75,25 @@ def test_a_key_path_that_is_a_fifo_is_refused_without_blocking(tmp_path):
     assert "not a regular file" in str(e.value)
 
 
+def test_the_server_does_not_start_when_linux_refuses_non_dumpable(tmp_path, monkeypatch):
+    import uvicorn
+
+    from vkteams_mcp import app
+
+    f = key_file(tmp_path, KEY_A)
+    monkeypatch.setenv("VKTEAMS_MCP_PUBLIC_URL", PUBLIC)
+    monkeypatch.setenv("VKTEAMS_MCP_KEY_FILE", str(f))
+    monkeypatch.setattr(app, "make_undumpable", lambda: False)
+
+    def serving(*a, **kw):
+        raise AssertionError("the server started without the protection")
+
+    monkeypatch.setattr(uvicorn, "run", serving)
+    with pytest.raises(SystemExit) as e:
+        app.main()
+    assert e.value.code == 2
+
+
 def test_the_process_is_made_non_dumpable_on_linux():
     """Another process of the same user cannot read the key from /proc/<pid>/mem once this is set."""
     import subprocess
@@ -129,6 +148,8 @@ def test_a_key_path_that_is_not_a_readable_file_says_so_without_a_traceback(tmp_
     with pytest.raises(ConfigError) as e:
         Settings.from_env(env_with(tmp_path / "dir"))
     assert "not a regular file" in str(e.value)
+    if os.geteuid() == 0:
+        return  # root reads a mode 000 file anyway
     f = key_file(tmp_path, KEY_A, mode=0o000)
     with pytest.raises(ConfigError) as e:
         Settings.from_env(env_with(f))
