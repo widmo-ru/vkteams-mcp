@@ -940,6 +940,20 @@ MUTATIONS = [
             "tests/unit/test_state_config.py::test_a_malformed_state_url_is_a_config_error_not_a_crash_later[redis://h/-1]",
         ],
     ),
+    (
+        "a call with several new keys needs room for all of them",
+        "core/state.py",
+        [
+            (
+                "            return 1 if keys is None else len({k for k in keys if k not in table})",
+                "            return 1",
+            )
+        ],
+        [
+            "tests/unit/test_state_contract.py::test_a_call_with_several_new_keys_needs_room_for_all_of_them",
+            "tests/unit/test_state_contract.py::test_a_key_swept_while_making_room_is_counted_as_a_newcomer",
+        ],
+    ),
 ]
 
 

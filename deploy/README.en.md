@@ -97,7 +97,7 @@ at start. A store gives both zero-downtime rollouts and state that survives a de
 
 **When the store is down:** sign-in, spending a code and sending fail closed with "try again shortly" (the person is not
 let through without the limit); reading and listing go on. Readiness does **not** depend on the store (one outage
-would empty the Service): `mcp_state_store_up` goes to 0 (set an alert on it). In memory mode (no store) a table that is full of live entries (50 000 of a kind) refuses new keys with the same answer, keeps every live entry and resumes as entries expire; do not restart to clear it, that clears the limits. In memory mode (no store) a table full of live entries (50 000 of a kind) refuses new keys with the same answer, keeps every live entry and resumes as entries expire; do not restart to clear it, that clears the limits. A Sentinel
+would empty the Service): `mcp_state_store_up` goes to 0 (set an alert on it). In memory mode (no store) a table full of live entries (50 000 of a kind) refuses new keys with the same answer, keeps every live entry and resumes as entries expire; do not restart to clear it, that clears the limits. A Sentinel
 failover is followed without a restart: connections time out after 1 second and the master is looked up again.
 
 ## Probes, metrics, ingress

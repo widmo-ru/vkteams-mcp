@@ -128,18 +128,23 @@ class MemoryStore:
             return None
         return hit
 
-    def _admit(self, table: dict, forget: Callable[[float], None], new: int = 1) -> None:
-        """Called before a NEW key goes into `table`. When the table is full the expired entries go (at most once a
-        second: a full store must not be scanned on every request), and if it is still full of LIVE entries the call
-        fails closed. Forgetting a live entry would lift a limit, free a held lock or let a spent code be spent again;
-        refusing the newcomer only refuses the newcomer."""
-        if len(table) + new <= MEMORY_MAX:
+    def _admit(self, table: dict, forget: Callable[[float], None], keys: Sequence[str] | None = None) -> None:
+        """Called before NEW keys go into `table`: `keys` are the ones this call needs (default: one new one). When
+        there is no room for those that are not already there, the expired entries go (at most once a second: a full
+        store must not be scanned on every request), and if there is still no room because the table is full of LIVE
+        entries the call fails closed. Forgetting a live entry would lift a limit, free a held lock or let a spent
+        code be spent again; refusing the newcomers only refuses the newcomers."""
+
+        def missing() -> int:
+            return 1 if keys is None else len({k for k in keys if k not in table})
+
+        if len(table) + missing() <= MEMORY_MAX:
             return
         now = self.clock()
         if now - self._pruned_at.get(id(table), float("-inf")) >= 1.0:
             self._pruned_at[id(table)] = now
             forget(now)
-        if len(table) + new > MEMORY_MAX:
+        if len(table) + missing() > MEMORY_MAX:  # counted again: the sweep may have removed a key this call needs
             raise StateUnavailable("MemoryStoreFull")
 
     def _forget_kv(self, now: float) -> None:
@@ -172,9 +177,7 @@ class MemoryStore:
             for k in [k for k, q in self._windows.items() if not q or at - q[-1] >= window]:
                 del self._windows[k]
 
-        newcomers = {k for k, _ in keyed if k not in self._windows}
-        if newcomers:  # room for ALL the new keys of this call, or none is counted
-            self._admit(self._windows, forget, len(newcomers))
+        self._admit(self._windows, forget, [k for k, _ in keyed])  # room for ALL the new keys of this call, or none
         for k, limit in keyed:
             q = self._windows.setdefault(k, deque())
             while q and now - q[0] >= window:

@@ -411,3 +411,21 @@ async def test_a_call_with_several_new_keys_needs_room_for_all_of_them(monkeypat
         await m.window_take("codes", [("c", 5), ("d", 5)], 300)  # one free slot, two newcomers
     assert len(m.keys()) == 2  # nothing of the refused call was recorded
     assert await m.window_take("codes", [("c", 5)], 300) is True
+
+
+async def test_a_key_swept_while_making_room_is_counted_as_a_newcomer(monkeypatch):
+    """`a` expired and is in this call; the sweep removes it and the call recreates it: it needs a slot too."""
+    from vkteams_mcp.core import state
+
+    monkeypatch.setattr(state, "MEMORY_MAX", 3)
+    now = [0.0]
+    m = MemoryStore(derive_key(SECRET), clock=lambda: now[0])
+    assert await m.window_take("codes", [("a", 5)], 10) is True
+    now[0] = 15.0
+    assert await m.window_take("codes", [("b", 5), ("c", 5)], 10) is True
+    now[0] = 20.0  # `a` is out of its 10-second window; b and c are live
+    with pytest.raises(StateUnavailable):
+        await m.window_take(
+            "codes", [("a", 5), ("d", 5)], 10
+        )  # a and d both need a slot after the sweep: two, one free
+    assert len(m.keys()) <= 3
