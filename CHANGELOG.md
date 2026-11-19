@@ -38,7 +38,7 @@ Many replicas, JSON logs, metrics, and a chart.
   `python -m vkteams_mcp.stage /secret/key:/run/vkteams-mcp/key`), and remove the variable from the Deployment, `envFrom`
   and any secret manager that sets it. The same key value in the file keeps everyone signed in. Steps in
   [deploy/README.en.md](deploy/README.en.md#moving-from-03x).
-- The image's bases are pinned by digest and replaceable (`BASE_IMAGE`, `UV_IMAGE`).
+- The image's bases are pinned by digest and replaceable (`BASE_IMAGE`, `UV_IMAGE`). The image is tagged `x.y.z` and `x.y`; there is no `latest` tag any more: pin a version.
 - A number that is not a number in a header or a setting is refused, not a crash.
 
 Proof is in CI: the state store's contract suite on real Valkey and Redis (standalone and Sentinel), and the chart in
