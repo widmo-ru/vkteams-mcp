@@ -171,10 +171,10 @@ partial result: the tool reports who failed and why.
 | a state store URL together with Sentinels | tests/unit/test_state_config.py::test_a_url_and_sentinels_together_are_a_config_error |
 | a password in the state store URL | tests/unit/test_state_config.py::test_a_password_in_the_url_is_refused_and_not_echoed |
 | a state store password file others can read | tests/unit/test_state_config.py::test_a_password_file_others_can_read_is_refused |
-| sending while the state store is down | tests/unit/test_state_failclosed.py::test_sending_is_refused_and_nothing_is_sent |
+| sending while the state store is down: "This server cannot reach its shared state right now, so it cannot check the limit on actions other people see, and it does not take them. {outcome} Try again shortly." (`{outcome}` is the kind's "Nothing was sent." and the like); not the VK Teams "throttled" sentence | tests/unit/test_state_failclosed.py::test_sending_is_refused_and_nothing_is_sent |
 | signing in while the state store is down | tests/unit/test_state_failclosed.py::test_sign_in_refuses_a_step_it_cannot_count |
-| a code exchange the store cannot record (the code stays unspent) | tests/unit/test_state_failclosed.py::test_the_token_endpoint_answers_503_and_leaves_the_code_unspent |
-| an upload the store cannot lock | tests/unit/test_state_failclosed.py::test_an_upload_is_refused_with_503_and_nothing_reaches_vk_teams |
+| a code exchange the store cannot record: 503 `temporarily_unavailable`, `Retry-After: 5`, no token issued; the code is normally still unspent, but if the store lost its reply after recording the mark it is spent and the client starts sign-in again | tests/unit/test_state_failclosed.py::test_the_token_endpoint_answers_503_and_leaves_the_code_unspent |
+| an upload the store cannot lock: HTTP 503 `This server cannot check the link right now. Try again shortly.` with `Retry-After: 5` | tests/unit/test_state_failclosed.py::test_an_upload_is_refused_with_503_and_nothing_reaches_vk_teams |
 | a sixth wrong code for one sign-in step, across replicas | tests/unit/test_replicas_on_valkey.py::test_wrong_codes_are_counted_across_replicas |
 | a fourth code request for one address, across replicas | tests/unit/test_replicas_on_valkey.py::test_code_requests_are_limited_across_replicas |
 | an eleventh outward action, across replicas | tests/unit/test_replicas_on_valkey.py::test_the_send_allowance_is_one_bucket_across_replicas |

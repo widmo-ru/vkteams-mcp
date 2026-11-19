@@ -152,8 +152,8 @@ docker run -p 127.0.0.1:8000:8000 -v vkteams-mcp-key:/run/vkteams-mcp \
 | `VKTEAMS_MCP_METRICS_PORT` | Порт `/metrics`, `/healthz` и `/readyz` (по умолчанию 9090); никогда не публичный порт |
 | `VKTEAMS_MCP_STATE_URL` | `redis://host:6379/0` или `rediss://…`: общее хранилище состояния (Redis или Valkey). Не задано (и нет sentinel): память, для ОДНОЙ реплики |
 | `VKTEAMS_MCP_STATE_SENTINELS`, `VKTEAMS_MCP_STATE_SENTINEL_MASTER` | `host:26379,…` и имя мастера (по умолчанию `mymaster`): режим Sentinel. Не вместе с URL |
-| `VKTEAMS_MCP_STATE_DB`, `_STATE_TLS`, `_STATE_USERNAME`, `_STATE_PREFIX` | номер базы, `true` для TLS, ACL-пользователь, префикс ключей (по умолчанию `vkteams:`) |
-| `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `_STATE_SENTINEL_PASSWORD_FILE` | пароли только из файлов (права 0400, как у ключа) |
+| `VKTEAMS_MCP_STATE_DB`, `VKTEAMS_MCP_STATE_TLS`, `VKTEAMS_MCP_STATE_USERNAME`, `VKTEAMS_MCP_STATE_PREFIX` | номер базы (перекрывает путь в URL), `true` для TLS, ACL-пользователь, префикс ключей (по умолчанию `vkteams:`) |
+| `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `VKTEAMS_MCP_STATE_SENTINEL_PASSWORD_FILE` | пароли только из файлов (права 0400, как у ключа) |
 | `VKTEAMS_MCP_TRUSTED_PROXIES` | CIDR прокси, которым разрешено задавать `X-Forwarded-For`; без него лимит входа на сеть выключен |
 | `VKTEAMS_MCP_CA_BUNDLE` | Файл CA для сервера VK Teams за внутренним CA |
 | `VKTEAMS_MCP_SECRET` | Удалена: ключ в переменной видит любой, кто может `kubectl exec … env`. Отвергается с 0.4.0: пока она задана, сервер не стартует. Как перейти: [deploy/README.md](deploy/README.md#переход-с-03x) |

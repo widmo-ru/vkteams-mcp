@@ -21,6 +21,13 @@ rel=e2e
 host=mcp.example.com
 fake="fake-vk.$ns.svc.cluster.local"
 work=$(mktemp -d)
+cluster=${KIND_CLUSTER:-vk-state}
+# Only this kind cluster is visible to everything below (kubectl, helm, new-sealing-key.sh): the default kubeconfig can
+# hold any number of other clusters, and another kind cluster's `kind create` moves its current context.
+kind get clusters | grep -qx "$cluster" || { echo "no kind cluster named $cluster"; exit 1; }
+kind export kubeconfig --name "$cluster" --kubeconfig "$work/kubeconfig"
+export KUBECONFIG="$work/kubeconfig"
+run=$(date +%s)  # addresses carry it: a rerun against the same Valkey must not meet the limits of the last one
 # public ports of pods A, B, C and their metrics ports, on this machine
 PUB=(18701 18702 18703)
 MET=(18791 18792 18793)
@@ -63,7 +70,7 @@ trap cleanup EXIT
 # ---------------------------------------------------------------- setup
 
 setup_namespace() {
-  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl --request-timeout=60s create namespace "$ns" --dry-run=client -o yaml | kubectl --request-timeout=60s apply -f - >/dev/null
   # the passwords of Valkey and of its Sentinels: random, in a Secret, never printed; the chart's init container
   # stages the same two values for the server
   if ! k get secret valkey-auth >/dev/null 2>&1; then
@@ -88,6 +95,8 @@ setup_namespace() {
 
 start_state() {
   sed -e "s#IMAGE_PLACEHOLDER#$image#" -e "s#FAKE_HOST_PLACEHOLDER#$fake#" tests/e2e/state.yaml | k apply -f - >/dev/null
+  # a rerun made a new CA and certificate: the fake loads its certificate at start, so it restarts to pick them up
+  k rollout restart deployment/fake-vk >/dev/null
   k rollout status statefulset/valkey --timeout=240s
   k rollout status statefulset/valkey-sentinel --timeout=240s
   k rollout status deployment/fake-vk --timeout=240s
@@ -279,7 +288,7 @@ c_code_once() {
   cid=$(register 0)
   rid=$(authorize 0 "$cid")
   [ -n "$rid" ] || { echo "authorize gave no sign-in request"; return 1; }
-  [ "$(address_step 0 "$rid" code-once@example.com)" = 200 ] || { echo "the address step failed"; cat "$work/page"; return 1; }
+  [ "$(address_step 0 "$rid" code-once-$run@example.com)" = 200 ] || { echo "the address step failed"; cat "$work/page"; return 1; }
   pending=$(pending_of)
   [ -n "$pending" ] || { echo "no code step offered"; return 1; }
   [ "$(code_step 0 "$rid" "$pending" ab12cd)" = 302 ] || { echo "the code step failed"; return 1; }
@@ -304,7 +313,7 @@ c_code_requests_limited() {
   rid=$(authorize 0 "$cid")
   # three codes an hour per address: the fourth request, wherever it lands, is refused
   for i in 0 1 2 0 1; do
-    code=$(address_step "$i" "$rid" limited@example.com)
+    code=$(address_step "$i" "$rid" limited-$run@example.com)
     seq="$seq $code"
     if grep -q 'Too many codes' "$work/page"; then seq="$seq(limited)"; fi
   done
@@ -316,7 +325,7 @@ c_wrong_codes_counted() {
   local cid rid pending seq="" i code
   cid=$(register 0)
   rid=$(authorize 0 "$cid")
-  [ "$(address_step 0 "$rid" tries@example.com)" = 200 ] || { echo "the address step failed"; return 1; }
+  [ "$(address_step 0 "$rid" tries-$run@example.com)" = 200 ] || { echo "the address step failed"; return 1; }
   pending=$(pending_of)
   # five wrong codes per sign-in step, spread over the three pods; the sixth is refused on any of them
   for i in 0 1 2 0 1 2 0; do
@@ -375,7 +384,7 @@ c_failover() {
     [ "$rc" = 200 ] || dropped=$((dropped + 1))
     [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:${MET[1]}/readyz" || true)" = 200 ] || dropped=$((dropped + 1))
     # a person trying to sign in on pod B, with an address of their own each time
-    code=$(address_step 1 "$rid" "poll-$n@example.com" || true)
+    code=$(address_step 1 "$rid" "poll-$run-$n@example.com" || true)
     if [ -z "$first503" ] && [ "$code" = 503 ]; then
       first503=$now
       logins_at_first503=$(fake_logins)
@@ -392,6 +401,7 @@ c_failover() {
       return 1
     fi
     if [ -n "$first503" ] && [ "$code" = 200 ]; then
+      now=$(date +%s)  # when the answer came back, not when this round began
       recovered=$now
       echo "sign-in works again at +$((now - t0))s (outage $((now - first503))s)"
       break
@@ -412,7 +422,7 @@ c_failover() {
   cid=$(register 0)
   for i in 0 1 2; do
     rid=$(authorize "$i" "$cid")
-    [ "$(address_step "$i" "$rid" "after-$i@example.com")" = 200 ] || { echo "pod $i cannot sign in after the failover"; return 1; }
+    [ "$(address_step "$i" "$rid" "after-$run-$i@example.com")" = 200 ] || { echo "pod $i cannot sign in after the failover"; return 1; }
   done
   after=$(sentinel_master)
   echo "master after: $after"

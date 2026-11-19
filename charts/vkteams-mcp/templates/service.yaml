@@ -17,7 +17,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "vkteams-mcp.fullname" . }}-metrics
+  name: {{ include "vkteams-mcp.metricsName" . }}
   labels:
     {{- include "vkteams-mcp.labels" . | nindent 4 }}
     vkteams-mcp/metrics: "true"

@@ -64,13 +64,16 @@ async def download(request: Request) -> Response:
     name = link.get("name", "file")
 
     async def body():
+        done = False
         try:
             async for chunk in upstream.aiter_bytes():
                 yield chunk
+            done = True
         finally:
             await upstream.aclose()
+            # counted when the bytes have been sent (or have not): a 200 that dies half way is a failed transfer
+            obs.inc(obs.LINK_TRANSFERS, "download", "ok" if done else "error")
 
-    obs.inc(obs.LINK_TRANSFERS, "download", "ok")
     passed = {k: upstream.headers[k] for k in _PASSED_BACK if k in upstream.headers}
     if upstream.headers.get("content-encoding", "identity") != "identity":
         passed.pop("content-length", None)  # the body below is decoded: its length is not the upstream one

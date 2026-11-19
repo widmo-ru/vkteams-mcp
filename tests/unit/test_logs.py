@@ -124,7 +124,12 @@ def env_for(tmp_path: Path, **extra: str) -> dict[str, str]:
         key.write_text(KEY)
         key.chmod(0o400)
     env = {k: v for k, v in os.environ.items() if not k.startswith("VKTEAMS_MCP_")}
-    env.update(PYTHONUNBUFFERED="1", VKTEAMS_MCP_KEY_FILE=str(key), VKTEAMS_MCP_PUBLIC_URL="http://localhost:18999")
+    env.update(
+        PYTHONUNBUFFERED="1",
+        LOG_LEVEL="INFO",
+        VKTEAMS_MCP_KEY_FILE=str(key),
+        VKTEAMS_MCP_PUBLIC_URL="http://localhost:18999",
+    )
     env.update(extra)
     return env
 
@@ -278,3 +283,20 @@ def test_the_running_server_writes_only_json_from_start_to_stop(tmp_path):
     assert "start" in events and "state_memory" in events
     # uvicorn finishes its shutdown, then re-raises the signal it was stopped by, so a clean stop reads -15
     assert proc.returncode in (0, -signal.SIGTERM)
+
+
+def test_an_optional_missing_source_removes_a_stale_destination(tmp_path):
+    """A retry of the init container after the Secret lost an entry must not keep using what an earlier try staged."""
+    src = tmp_path / "secret"
+    src.mkdir()
+    (src / "key").write_text(KEY)
+    (src / "password").write_text("old-password")
+    dst = tmp_path / "run"
+    dst.mkdir()
+    args = [f"{src}/key:{dst}/key", "--optional", f"{src}/password:{dst}/state-password"]
+    assert run(["-m", "vkteams_mcp.stage", *args], env_for(tmp_path)).returncode == 0
+    assert (dst / "state-password").exists()
+    (src / "password").unlink()
+    p = run(["-m", "vkteams_mcp.stage", *args], env_for(tmp_path))
+    assert p.returncode == 0 and not (dst / "state-password").exists()
+    assert "stage_skipped" in [x["event"] for x in every_line_is_json(p.stderr)]

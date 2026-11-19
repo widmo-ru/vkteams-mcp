@@ -114,8 +114,10 @@ def build(
     async def heartbeat() -> None:
         """Asks the store every few seconds, so the gauge and the pod's readiness follow it with no traffic."""
         while True:
-            with contextlib.suppress(StateUnavailable, TimeoutError):
-                await asyncio.wait_for(store.ping(), 3)
+            # the store bounds its own operations (OP_TIMEOUT) and marks the gauge down when one fails: an outer
+            # timeout here would cancel the call before it could
+            with contextlib.suppress(StateUnavailable):
+                await store.ping()
             await asyncio.sleep(PROBE_EVERY)
 
     @contextlib.asynccontextmanager

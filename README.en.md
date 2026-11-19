@@ -154,8 +154,8 @@ To build the image yourself: `docker build -t vkteams-mcp .`.
 | `VKTEAMS_MCP_METRICS_PORT` | Port of `/metrics`, `/healthz` and `/readyz` (default 9090); never the public port |
 | `VKTEAMS_MCP_STATE_URL` | `redis://host:6379/0` or `rediss://…`: the shared state store (Redis or Valkey). Unset (and no sentinels): memory, for ONE replica |
 | `VKTEAMS_MCP_STATE_SENTINELS`, `VKTEAMS_MCP_STATE_SENTINEL_MASTER` | `host:26379,…` and the master's name (default `mymaster`): Sentinel mode. Not together with the URL |
-| `VKTEAMS_MCP_STATE_DB`, `_STATE_TLS`, `_STATE_USERNAME`, `_STATE_PREFIX` | database, `true` for TLS, ACL user, key prefix (default `vkteams:`) |
-| `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `_STATE_SENTINEL_PASSWORD_FILE` | passwords, from files only (owner-only 0400, like the key) |
+| `VKTEAMS_MCP_STATE_DB`, `VKTEAMS_MCP_STATE_TLS`, `VKTEAMS_MCP_STATE_USERNAME`, `VKTEAMS_MCP_STATE_PREFIX` | database (overrides the URL's path), `true` for TLS, ACL user, key prefix (default `vkteams:`) |
+| `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `VKTEAMS_MCP_STATE_SENTINEL_PASSWORD_FILE` | passwords, from files only (owner-only 0400, like the key) |
 | `VKTEAMS_MCP_TRUSTED_PROXIES` | CIDRs of the proxies allowed to set `X-Forwarded-For`; without it the sign-in limit per network is off |
 | `VKTEAMS_MCP_CA_BUNDLE` | A CA file for a VK Teams server behind an internal CA |
 | `VKTEAMS_MCP_SECRET` | Removed: a key in a variable is visible to anyone who can `kubectl exec … env`. Refused since 0.4.0: the server does not start while it is set. Migration: [deploy/README.en.md](deploy/README.en.md#moving-from-03x) |

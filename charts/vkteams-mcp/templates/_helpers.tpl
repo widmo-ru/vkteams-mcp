@@ -10,6 +10,11 @@
 {{- end -}}
 {{- end -}}
 
+{{/* The metrics Service's name: 63 characters at most, with the suffix. */}}
+{{- define "vkteams-mcp.metricsName" -}}
+{{- printf "%s-metrics" (include "vkteams-mcp.fullname" . | trunc 55 | trimSuffix "-") -}}
+{{- end -}}
+
 {{- define "vkteams-mcp.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "vkteams-mcp.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
@@ -80,6 +85,9 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- end -}}
 {{- range $k, $_ := $v.podLabels -}}
 {{- if has $k (list "app.kubernetes.io/name" "app.kubernetes.io/instance") -}}{{- fail (printf "podLabels.%s is set by the chart: the Deployment selects its pods by it" $k) -}}{{- end -}}
+{{- end -}}
+{{- range $k, $_ := $v.metrics.serviceMonitor.labels -}}
+{{- if or (hasPrefix "app.kubernetes.io/" $k) (hasPrefix "helm.sh/" $k) (eq $k "vkteams-mcp/metrics") -}}{{- fail (printf "metrics.serviceMonitor.labels.%s is set by the chart" $k) -}}{{- end -}}
 {{- end -}}
 {{- if hasKey $v.podAnnotations "vkteams-mcp/key-revision" -}}{{- fail "podAnnotations.vkteams-mcp/key-revision is set by the chart from key.revision" -}}{{- end -}}
 {{- end -}}

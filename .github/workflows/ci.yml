@@ -86,20 +86,28 @@ jobs:
           for kind in Ingress ServiceMonitor HorizontalPodAutoscaler PodDisruptionBudget; do
             grep -q "^kind: $kind" full.yaml || { echo "no $kind rendered"; exit 1; }
           done
-          # each of these must be refused: a render that succeeds is the failure
+          # each of these must be refused BY ITS OWN VALIDATOR: a render that fails for another reason (a typo, a type
+          # error) must not count, so each case names the message it expects
           refuse() {
+            want=$1
+            shift
             if out=$(helm template t charts/vkteams-mcp "$@" 2>&1); then echo "rendered: $*"; exit 1; fi
-            echo "refused as it should: $*"
+            case "$out" in *"$want"*) echo "refused as it should ($want)" ;; *) echo "refused for another reason, wanted '$want':"; echo "$out"; exit 1 ;; esac
           }
-          refuse --set key.existingSecret=k --set publicUrl=https://mcp.example.org                       # two replicas, no state
-          refuse --set key.existingSecret=k --set publicUrl=https://mcp.example.org --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.minReplicas=2
-          refuse "${ok[@]}" --set 'state.sentinel.hosts={s:26379}'                                         # URL and Sentinels
-          refuse "${ok[@]}" --set state.url=redis://u:p@valkey:6379/0                                      # a password in the URL
-          refuse "${ok[@]}" --set key.existingSecret=
-          refuse "${ok[@]}" --set publicUrl=http://mcp.example.org
-          refuse "${ok[@]}" --set 'ingress.paths={/}'
-          refuse "${ok[@]}" --set metrics.port=8000
-          refuse "${ok[@]}" --set 'trustedProxies={not-a-cidr}'
+          base=(--set key.existingSecret=k --set publicUrl=https://mcp.example.org)
+          refuse "more than one replica needs a shared state store" "${base[@]}"
+          refuse "more than one replica needs a shared state store" "${base[@]}" --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.minReplicas=2
+          refuse "are both set" "${ok[@]}" --set 'state.sentinel.hosts={s:26379}'
+          refuse "carries a user or password" "${ok[@]}" --set state.url=redis://u:p@valkey:6379/0
+          refuse "key.existingSecret is required" "${ok[@]}" --set key.existingSecret=
+          refuse "must start with https://" "${ok[@]}" --set publicUrl=http://mcp.example.org
+          refuse "is not an explicit path" "${ok[@]}" --set 'ingress.paths={/}'
+          refuse "must be another port than 8000" "${ok[@]}" --set metrics.port=8000
+          refuse "is not an address or a CIDR" "${ok[@]}" --set 'trustedProxies={not-a-cidr}'
+          refuse "is set by the chart" "${ok[@]}" --set metrics.serviceMonitor.labels.app\\.kubernetes\\.io/instance=x
+          # memory mode is one pod with Recreate; a store is a rolling update
+          helm template t charts/vkteams-mcp "${base[@]}" --set replicaCount=1 | grep -q 'type: Recreate'
+          helm template t charts/vkteams-mcp "${ok[@]}" | grep -q 'type: RollingUpdate'
       - name: build the image under test
         run: docker build -t vkteams-mcp:e2e .
       - name: kind cluster with the image loaded

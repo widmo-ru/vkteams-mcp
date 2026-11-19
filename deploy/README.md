@@ -49,8 +49,9 @@ flowchart LR
 `scripts/new-sealing-key.sh <namespace> <secret>`: скрипт печатает идентификатор ревизии для `key.revision`.
 
 **Смена ключа** — отдельная осознанная операция: запишите новое значение в Secret и задайте новый `key.revision`
-(через аннотацию пода это перезапустит все поды). Все войдут заново, один раз; пока идёт обновление, токен, запечатанный
-подом с новым ключом, отвергается подом со старым. Сервер знает один ключ, а не «предыдущий рядом»: обновление и есть
+(через аннотацию пода это перезапустит все поды). Все войдут заново; пока идёт обновление, токен, запечатанный
+подом с новым ключом, отвергается подом со старым, так что клиент может получить отказ не раз, пока обновление не
+закончится: переподключитесь после него. Сервер знает один ключ, а не «предыдущий рядом»: обновление и есть
 весь период перекрытия.
 
 | Событие | Люди |
@@ -58,7 +59,7 @@ flowchart LR
 | деплой с тем же ключом | остаются в системе |
 | под перезапущен или перепланирован | остаются в системе |
 | контейнер перезапущен внутри пода | остаются в системе |
-| ключ заменён | **разлогинены один раз**: старые токены получают 401 `invalid_token`, клиент входит заново |
+| ключ заменён | **разлогинены**: старые токены получают 401 `invalid_token`; переподключитесь, когда обновление закончится |
 
 ## Хранилище состояния
 
@@ -69,7 +70,7 @@ flowchart LR
 |---|---|---|
 | погашенный код авторизации | 5 минут | `1` |
 | запросы кода входа на адрес и на сеть (3 и 10 в час) | 1 час | метки времени |
-| неверные коды на шаг входа (5) | 15 минут | число |
+| отправки кода на шаг входа (5; считается каждая, неверная или встретившая ошибку upstream) | 15 минут | число |
 | квота отправки на человека (10 сразу, 10 в минуту) | пока не наполнится | число и время |
 | ссылка загрузки, пока идёт загрузка по ней | 10 минут | токен замка |
 
@@ -83,14 +84,16 @@ TLS (внутри сети платформы); если пароль есть, 
 |---|---|---|
 | один Redis или Valkey | `state.url: redis://host:6379/0` (или `rediss://`) | `VKTEAMS_MCP_STATE_URL` |
 | Sentinel | `state.sentinel.hosts: [h1:26379, …]`, `.master: mymaster` (один хост допустим) | `VKTEAMS_MCP_STATE_SENTINELS`, `VKTEAMS_MCP_STATE_SENTINEL_MASTER` |
-| база, TLS, ACL-пользователь | `state.db`, `state.tls`, `state.username` | `VKTEAMS_MCP_STATE_DB`, `_STATE_TLS`, `_STATE_USERNAME` |
-| пароли | `state.existingSecret` с ключами `password`, `sentinelPassword` | `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `_STATE_SENTINEL_PASSWORD_FILE` |
+| база, TLS, ACL-пользователь | `state.db` (Sentinel; при URL база — его путь), `state.tls`, `state.username` | `VKTEAMS_MCP_STATE_DB`, `VKTEAMS_MCP_STATE_TLS`, `VKTEAMS_MCP_STATE_USERNAME` |
+| пароли | `state.existingSecret` с ключами `password`, `sentinelPassword` | `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `VKTEAMS_MCP_STATE_SENTINEL_PASSWORD_FILE` |
 | префикс ключей | `state.prefix` (по умолчанию `vkteams:`) | `VKTEAMS_MCP_STATE_PREFIX` |
 
 URL вместе с Sentinel — ошибка настройки, пароль в URL — тоже. Файлы с паролями кладёт тот же init-контейнер, что и ключ,
 в тот же memory-том, с теми же проверками (обычный файл, только владелец, uid сервера, не больше 1 КиБ). Ничего не задано —
 память: годится для **одной** реплики; чарт откажется от большего числа (`replicaCount > 1` или автомасштабирование без
-хранилища), а сервер при старте пишет предупреждение.
+хранилища) и развёртывает с `Recreate` (два пода с отдельной памятью не должны работать вместе: у деплоя короткий
+простой, а метки старого пода теряются), а сервер при старте пишет предупреждение. Хранилище даёт и обновление без
+простоя, и состояние, переживающее деплой.
 
 **Когда хранилище недоступно:** вход, погашение кода и отправка закрываются отказом «попробуйте через минуту» (человека не
 пропускают без лимита); чтение и списки работают. Готовность от хранилища **не** зависит (один сбой опустошил бы Service):
@@ -128,8 +131,9 @@ Python. В метках никогда нет человека, адреса и�
 подов ingress-контроллера) разрешает этим прокси сообщать его в `X-Forwarded-For`. Без него лимит на сеть выключен (все
 запросы были бы одним адресом), и сервер пишет об этом при старте; лимит на адрес остаётся.
 
-**Загрузки и скачивания** идут через ingress: для ingress-nginx задайте `proxy-body-size` не меньше 100m,
-`proxy-buffering: "off"` и `proxy-read-timeout` / `proxy-send-timeout` от 300. Чарт оставляет их пустыми; кладите их в
+**Загрузки и скачивания** идут через ingress: для ingress-nginx задайте в `ingress.annotations`
+`nginx.ingress.kubernetes.io/proxy-body-size: "100m"`, `nginx.ingress.kubernetes.io/proxy-buffering: "off"`,
+`nginx.ingress.kubernetes.io/proxy-read-timeout: "300"` и `nginx.ingress.kubernetes.io/proxy-send-timeout: "300"`. Чарт оставляет их пустыми; кладите их в
 `ingress.annotations`.
 
 **CA-бандл** для сервера VK Teams за внутренним CA: `vkteams.caBundle.configMap` и `.key` (`VKTEAMS_MCP_CA_BUNDLE`); он
@@ -187,12 +191,16 @@ Python. В метках никогда нет человека, адреса и�
 
 Переход с `VKTEAMS_MCP_SECRET`: (1) положите ключ в Secret в поле `key` (значение переменной и есть ключ; то же значение никого не разлогинивает), (2) разверните чартом или добавьте init-контейнер `python -m vkteams_mcp.stage /secret/key:/run/vkteams-mcp/key`, (3) уберите переменную из Deployment, `envFrom` и всего, что её задаёт.
 
+Смену образа или init-контейнера и удаление переменной (включая любой `envFrom`, который её задаёт) применяйте одним обновлением шаблона пода: 0.4.0 не стартует, пока она задана, даже при подложенном файле.
+
 Переход на чарт — один деплой с ключом из вашего Secret: если это не тот ключ, на котором работал прежний деплой, все
 войдут заново один раз.
 
 ## Когда сервер не запускается
 
-Каждая строка ниже — JSON-запись с `"event": "config_error"` в stderr; код выхода 2.
+Каждая строка ниже — JSON-запись с `"event": "config_error"` в stderr; код выхода 2. Сбои init-контейнера — отдельные
+события (`stage_failed`, `stage_usage`, `not_dumpable`): причину читайте в `msg` (нет, пустой или слишком длинный источник,
+нечитаемый источник, не удалось записать назначение).
 
 | `msg` | Причина | Что делать |
 |---|---|---|
@@ -206,7 +214,12 @@ Python. В метках никогда нет человека, адреса и�
 | `VKTEAMS_MCP_STATE_… is set but there is no VKTEAMS_MCP_STATE_URL` | настройка хранилища без хранилища | задайте URL или Sentinel |
 | `VKTEAMS_MCP_METRICS_PORT is the public port` | один и тот же порт | другой порт |
 | `the process could not be made non-dumpable … not starting` | профиль seccomp отказал `prctl` | `RuntimeDefault` разрешает |
-| `stage_failed` (init-контейнер, код 2) | в Secret нет ключа | поле `key.secretKey` у `key.existingSecret` |
+| `stage_failed` (init-контейнер, код 2) | смотрите `msg`: нет, пустой или слишком большой источник, либо не удалось записать назначение | поле `key.secretKey` у `key.existingSecret` |
+| `VKTEAMS_MCP_STATE_SENTINELS: … is not host:port` / `has no host:port in it` | неверный список Sentinel (IPv6 — в `[скобках]`) | `host:26379,[::1]:26379` |
+| `VKTEAMS_MCP_STATE_URL must be redis://… / is not a URL / the path is a database number / has no query or fragment` | неверный URL | `redis://host:6379/0` |
+| `VKTEAMS_MCP_STATE_DB is a database number` / `… is a port number` | не число | число |
+| `VKTEAMS_MCP_TRUSTED_PROXIES: … is not an address or a CIDR` | неверная запись | `10.0.0.0/8` |
+| `VKTEAMS_MCP_CA_BUNDLE: … is not a file` / `holds no readable PEM certificates` | не тот путь или файл | PEM-бандл |
 | `VKTEAMS_MCP_SECRET is no longer accepted …` | ключ всё ещё приходит переменной | миграция выше, затем уберите переменную |
 
 ## Что остаётся

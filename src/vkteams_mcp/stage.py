@@ -41,6 +41,9 @@ def stage_one(src: str, dst: str, *, optional: bool = False) -> int | None:
             data = f.read(LIMIT + 1)
     except FileNotFoundError:
         if optional:
+            # an earlier try may have staged it, and the Secret has lost it since: a stale password must not stay
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(dst)
             return None
         raise StageError(f"{src} does not exist: is the key in the Secret under that name?") from None
     except OSError as err:

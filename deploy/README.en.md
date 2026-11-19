@@ -49,8 +49,9 @@ secrets live (a werf secret value, a sealed or external secret) or make one with
 `scripts/new-sealing-key.sh <namespace> <secret>`, which prints a revision id for `key.revision`.
 
 **Rotating the key** is a separate, deliberate operation: write the new value into the Secret and set a new
-`key.revision` (this restarts every pod through a pod annotation). Everyone signs in again, once; while the rollout
-runs, a token sealed by a new-key pod is refused by an old-key pod. The server takes one key, not a previous one
+`key.revision` (this restarts every pod through a pod annotation). Everyone signs in again; while the rollout
+runs, a token sealed by a new-key pod is refused by an old-key pod, so a client may be refused more than once until the
+rollout is over: reconnect after it completes. The server takes one key, not a previous one
 alongside: a rollout is the whole overlap.
 
 | Event | People |
@@ -58,7 +59,7 @@ alongside: a rollout is the whole overlap.
 | a deploy with the same key | stay signed in |
 | a pod restarted or rescheduled | stay signed in |
 | a container restarted inside the pod | stay signed in |
-| the key rotated | **signed out once**: old tokens get 401 `invalid_token`, the client signs in again |
+| the key rotated | **signed out**: old tokens get 401 `invalid_token`; reconnect once the rollout is over |
 
 ## The state store
 
@@ -69,7 +70,7 @@ only what must be refused the second time wherever it lands:
 |---|---|---|
 | a redeemed authorization code | 5 minutes | `1` |
 | sign-in code requests per address and per network (3 and 10 an hour) | 1 hour | timestamps |
-| wrong codes per sign-in step (5) | 15 minutes | a number |
+| code submissions per sign-in step (5; every submission counts, wrong or met by an upstream error) | 15 minutes | a number |
 | the send allowance per person (10 at once, 10 a minute) | until full again | a number and a time |
 | an upload link while an upload of it runs | 10 minutes | a lock token |
 
@@ -83,14 +84,16 @@ and no TLS (inside the platform network); when it has, the password comes from a
 |---|---|---|
 | one Redis or Valkey | `state.url: redis://host:6379/0` (or `rediss://`) | `VKTEAMS_MCP_STATE_URL` |
 | Sentinel | `state.sentinel.hosts: [h1:26379, …]`, `.master: mymaster` (one host is valid) | `VKTEAMS_MCP_STATE_SENTINELS`, `VKTEAMS_MCP_STATE_SENTINEL_MASTER` |
-| database, TLS, ACL user | `state.db`, `state.tls`, `state.username` | `VKTEAMS_MCP_STATE_DB`, `_STATE_TLS`, `_STATE_USERNAME` |
-| passwords | `state.existingSecret` with keys `password`, `sentinelPassword` | `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `_STATE_SENTINEL_PASSWORD_FILE` |
+| database, TLS, ACL user | `state.db` (Sentinel; with a URL the database is its path), `state.tls`, `state.username` | `VKTEAMS_MCP_STATE_DB`, `VKTEAMS_MCP_STATE_TLS`, `VKTEAMS_MCP_STATE_USERNAME` |
+| passwords | `state.existingSecret` with keys `password`, `sentinelPassword` | `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `VKTEAMS_MCP_STATE_SENTINEL_PASSWORD_FILE` |
 | key prefix | `state.prefix` (default `vkteams:`) | `VKTEAMS_MCP_STATE_PREFIX` |
 
 A URL together with Sentinels is a configuration error, and so is a password in the URL. The password files are
 staged by the same init container as the key, into the same memory volume, with the same checks (a regular file,
 owner-only, the server's uid, at most 1 KiB). Nothing set: memory, which is right for **one** replica; the chart
-refuses more (`replicaCount > 1` or autoscaling without a store), and the server logs a warning at start.
+refuses more (`replicaCount > 1` or autoscaling without a store) and deploys with `Recreate` (two pods with separate memories
+must never serve together, so a deploy has a short gap and the marks of the old pod are lost); the server logs a warning
+at start. A store gives both zero-downtime rollouts and state that survives a deploy.
 
 **When the store is down:** sign-in, spending a code and sending fail closed with "try again shortly" (the person is not
 let through without the limit); reading and listing go on. Readiness does **not** depend on the store (one outage
@@ -130,8 +133,9 @@ sets no CPU limit.
 `X-Forwarded-For`. Without it the limit per network is off (all requests would be one address) and the server logs
 that at start; the limit per address stays.
 
-**Uploads and downloads** pass through the ingress: for ingress-nginx set `proxy-body-size` to at least 100m,
-`proxy-buffering: "off"`, and `proxy-read-timeout` / `proxy-send-timeout` of 300 or more. The chart leaves them empty;
+**Uploads and downloads** pass through the ingress: for ingress-nginx set, in `ingress.annotations`,
+`nginx.ingress.kubernetes.io/proxy-body-size: "100m"`, `nginx.ingress.kubernetes.io/proxy-buffering: "off"`,
+`nginx.ingress.kubernetes.io/proxy-read-timeout: "300"` and `nginx.ingress.kubernetes.io/proxy-send-timeout: "300"`. The chart leaves them empty;
 put them in `ingress.annotations`.
 
 **A CA bundle** for a VK Teams server behind an internal CA: `vkteams.caBundle.configMap` and `.key`
@@ -189,12 +193,16 @@ The chart sets these; outside the chart they are the interface. Secrets are file
 
 `VKTEAMS_MCP_SECRET` migration: (1) put the key in a Secret under the field `key` (the variable's value is the key; the same value keeps everyone signed in), (2) deploy with the chart, or add the init container `python -m vkteams_mcp.stage /secret/key:/run/vkteams-mcp/key`, (3) remove the variable from the Deployment, `envFrom` and whatever sets it.
 
+Apply the image or init-container change and the removal of the variable (including any `envFrom` that sets it) in the same pod-template update: 0.4.0 refuses to start while it is set, even with the file staged.
+
 Moving to the chart is one deploy with the key from your Secret: if it is not the key the old deploy ran with,
 everyone signs in again once.
 
 ## When the server does not start
 
-Every line below is a JSON record with `"event": "config_error"` on stderr; the exit code is 2.
+Every line below is a JSON record with `"event": "config_error"` on stderr; the exit code is 2. The init container's own
+failures are separate events (`stage_failed`, `stage_usage`, `not_dumpable`): read `msg` for the cause (a missing, empty or
+too long source, an unreadable one, a destination it could not write).
 
 | `msg` | Cause | What to do |
 |---|---|---|
@@ -208,7 +216,12 @@ Every line below is a JSON record with `"event": "config_error"` on stderr; the 
 | `VKTEAMS_MCP_STATE_… is set but there is no VKTEAMS_MCP_STATE_URL` | a store setting without a store | set the URL or the Sentinels |
 | `VKTEAMS_MCP_METRICS_PORT is the public port` | the same port | another port |
 | `the process could not be made non-dumpable … not starting` | a seccomp profile refused `prctl` | `RuntimeDefault` allows it |
-| `stage_failed` (the init container, exit 2) | the Secret lacks the key | the field is `key.secretKey` of `key.existingSecret` |
+| `stage_failed` (the init container, exit 2) | see its `msg`: a missing, empty or oversized source, or a destination that could not be written | the field is `key.secretKey` of `key.existingSecret` |
+| `VKTEAMS_MCP_STATE_SENTINELS: … is not host:port` / `has no host:port in it` | a malformed Sentinel list (an IPv6 address goes in `[brackets]`) | `host:26379,[::1]:26379` |
+| `VKTEAMS_MCP_STATE_URL must be redis://… / is not a URL / the path is a database number / has no query or fragment` | a malformed URL | `redis://host:6379/0` |
+| `VKTEAMS_MCP_STATE_DB is a database number` / `… is a port number` | not a number | a number |
+| `VKTEAMS_MCP_TRUSTED_PROXIES: … is not an address or a CIDR` | a malformed entry | `10.0.0.0/8` |
+| `VKTEAMS_MCP_CA_BUNDLE: … is not a file` / `holds no readable PEM certificates` | a wrong path or file | a PEM bundle |
 | `VKTEAMS_MCP_SECRET is no longer accepted …` | the key still comes as a variable | the migration above, then remove the variable |
 
 ## What remains

@@ -676,10 +676,17 @@ MUTATIONS = [
         ["tests/unit/test_replicas.py::test_a_failed_disconnect_is_reported_not_swallowed"],
     ),
     (
-        "a full memory store keeps recording",
+        "a full memory store refuses newcomers instead of forgetting live state",
         "core/state.py",
-        [("            while len(self._kv) >= MEMORY_MAX:", "            while False:")],
-        ["tests/unit/test_state_contract.py::test_the_memory_store_is_bounded"],
+        [
+            (
+                '            raise StateUnavailable("MemoryStoreFull")',
+                "            self._kv.pop(next(iter(self._kv)), None)",
+            )
+        ],
+        [
+            "tests/unit/test_state_contract.py::test_a_full_memory_store_refuses_newcomers_and_forgets_nothing_live",
+        ],
     ),
     (
         "a key file readable by others is refused",
@@ -772,9 +779,8 @@ MUTATIONS = [
         "app.py",
         [
             (
-                "            with contextlib.suppress(StateUnavailable, TimeoutError):\n"
-                "                await asyncio.wait_for(store.ping(), 3)",
-                "            with contextlib.suppress(StateUnavailable, TimeoutError):\n                pass",
+                "            with contextlib.suppress(StateUnavailable):\n                await store.ping()",
+                "            with contextlib.suppress(StateUnavailable):\n                pass",
             )
         ],
         [
@@ -913,6 +919,26 @@ MUTATIONS = [
         "config.py",
         [("        if metrics_port == port:", "        if False:")],
         ["tests/unit/test_state_config.py::test_the_metrics_port_defaults_to_9090_and_is_never_the_public_port"],
+    ),
+    (
+        "an optional source that is gone removes its stale destination",
+        "stage.py",
+        [
+            (
+                "            with contextlib.suppress(FileNotFoundError):\n                os.unlink(dst)",
+                "            pass",
+            )
+        ],
+        ["tests/unit/test_logs.py::test_an_optional_missing_source_removes_a_stale_destination"],
+    ),
+    (
+        "a state URL's database must be a number",
+        "config.py",
+        [('        if u.path.strip("/") and (', "        if False and (")],
+        [
+            "tests/unit/test_state_config.py::test_a_malformed_state_url_is_a_config_error_not_a_crash_later[redis://h/not-a-db]",
+            "tests/unit/test_state_config.py::test_a_malformed_state_url_is_a_config_error_not_a_crash_later[redis://h/-1]",
+        ],
     ),
 ]
 

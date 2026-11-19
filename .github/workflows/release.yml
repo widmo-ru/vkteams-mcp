@@ -113,8 +113,6 @@ jobs:
           awk -v v="$v" '$0 ~ "^## "v" " {on=1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
           grep -q '[^[:space:]]' notes.md  # the version's section has text
           printf '\n**Image:** `%s:%s` (linux/amd64, linux/arm64)\n' "$IMAGE" "$v" >> notes.md
-          printf '\n**Chart:** `helm upgrade --install vkteams-mcp oci://ghcr.io/%s/charts/vkteams-mcp --version %s -f values.yaml`\n' \
-            "${GITHUB_REPOSITORY_OWNER}" "$v" >> notes.md
           gh release create "$GITHUB_REF_NAME" dist/* --title "vkteams-mcp $v" --notes-file notes.md --verify-tag
 
   # The chart: oci://ghcr.io/widmo-ru/charts/vkteams-mcp:<x.y.z>, after the image it points at was pushed. The CI run
@@ -124,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write  # to add the chart's line to the release notes once the chart is pushed
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -148,3 +146,15 @@ jobs:
           echo "$TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
           helm push "$pkg" "oci://ghcr.io/${OWNER}/charts"
           helm show chart "oci://ghcr.io/${OWNER}/charts/vkteams-mcp" --version "$version" | grep -qx "version: ${version}"
+      - name: the release notes name the chart, now that it can be installed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          gh release view "$TAG" --json body --jq .body > notes.md
+          printf '\n**Chart:** `helm upgrade --install vkteams-mcp oci://ghcr.io/%s/charts/vkteams-mcp --version %s -f values.yaml`\n' \
+            "$OWNER" "$version" >> notes.md
+          gh release edit "$TAG" --notes-file notes.md

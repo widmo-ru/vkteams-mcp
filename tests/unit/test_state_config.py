@@ -125,11 +125,15 @@ def test_a_password_file_others_can_read_is_refused(base, tmp_path, mode):
 
 
 def test_a_password_file_of_another_user_a_fifo_or_a_huge_file_is_refused(base, tmp_path, monkeypatch):
+    from vkteams_mcp import config
+
     f = secret_file(tmp_path, "pw")
-    monkeypatch.setattr(os, "geteuid", lambda: os.stat(f).st_uid + 1)
+    env = {**base, "VKTEAMS_MCP_STATE_URL": "redis://h", "VKTEAMS_MCP_STATE_PASSWORD_FILE": str(f)}
+    # only the state store's reader sees another user: the sealing key is read first and must not trip it
+    monkeypatch.setattr(config.os, "geteuid", lambda: os.stat(f).st_uid + 1)
     with pytest.raises(ConfigError) as e:
-        state_of(base, VKTEAMS_MCP_STATE_URL="redis://h", VKTEAMS_MCP_STATE_PASSWORD_FILE=str(f))
-    assert "belongs to uid" in str(e.value)
+        config._take_state(env)
+    assert "belongs to uid" in str(e.value) and "state store password" in str(e.value)
     monkeypatch.undo()
     fifo = tmp_path / "fifo"
     os.mkfifo(fifo, 0o400)
@@ -160,3 +164,26 @@ def test_the_metrics_port_defaults_to_9090_and_is_never_the_public_port(base):
         Settings.from_env({**base, "PORT": "9090"})
     with pytest.raises(ConfigError):
         Settings.from_env({**base, "VKTEAMS_MCP_METRICS_PORT": "nine"})
+
+
+@pytest.mark.parametrize(
+    ("item", "want"),
+    [("[::1]:26379", ("::1", 26379)), ("[fd00::5]", ("fd00::5", 26379)), ("s.example.org:1", ("s.example.org", 1))],
+)
+def test_ipv6_sentinels_go_in_brackets(base, item, want):
+    assert state_of(base, VKTEAMS_MCP_STATE_SENTINELS=item).sentinels == (want,)
+
+
+@pytest.mark.parametrize("item", ["::1", "fd00::5:26379", "[::1", "[::1]x", "[]:26379", "[::1]:99999"])
+def test_a_bare_or_broken_ipv6_sentinel_is_refused(base, item):
+    with pytest.raises(ConfigError):
+        state_of(base, VKTEAMS_MCP_STATE_SENTINELS=item)
+
+
+@pytest.mark.parametrize(
+    "url", ["redis://[::1", "redis://h:bad/0", "redis://h/not-a-db", "redis://h:99999999999/0", "redis://h/-1"]
+)
+def test_a_malformed_state_url_is_a_config_error_not_a_crash_later(base, url):
+    with pytest.raises(ConfigError) as e:
+        state_of(base, VKTEAMS_MCP_STATE_URL=url)
+    assert "STATE_URL" in str(e.value)

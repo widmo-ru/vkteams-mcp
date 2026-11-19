@@ -116,12 +116,22 @@ def _truthy(value: str | None) -> bool:
 
 
 def _hostport(item: str, default_port: int) -> tuple[str, int]:
-    host, sep, port = item.strip().rpartition(":")
-    if not sep:
-        host, port = item.strip(), str(default_port)
+    """host, host:port, [v6], [v6]:port. A bare IPv6 address has no way to say where the port starts: brackets."""
+    text = item.strip()
+    bad = ConfigError(f"VKTEAMS_MCP_STATE_SENTINELS: {text!r} is not host:port (an IPv6 address goes in [brackets])")
+    if text.startswith("["):
+        host, close, rest = text[1:].partition("]")
+        if not close or (rest and not rest.startswith(":")):
+            raise bad
+        port = rest[1:] if rest else str(default_port)
+    elif text.count(":") > 1:
+        raise bad
+    else:
+        host, sep, port = text.partition(":")
+        port = port if sep else str(default_port)
     n = as_int(port)
     if not host or n is None or not 0 < n < 65536:
-        raise ConfigError(f"VKTEAMS_MCP_STATE_SENTINELS: {item.strip()!r} is not host:port")
+        raise bad
     return host, n
 
 
@@ -150,9 +160,17 @@ def _take_state(e: dict[str, str] | os._Environ[str]) -> StateConfig:
                 raise ConfigError(f"{name} is set but there is no VKTEAMS_MCP_STATE_URL or VKTEAMS_MCP_STATE_SENTINELS")
         return StateConfig(prefix=e.get("VKTEAMS_MCP_STATE_PREFIX") or "vkteams:")
     if url:
-        u = urlsplit(url)
+        try:
+            u = urlsplit(url)
+            u.port  # noqa: B018 - a port that is not a number raises here
+        except ValueError:
+            raise ConfigError(
+                "VKTEAMS_MCP_STATE_URL is not a URL: use redis://host:6379/0 or rediss://host:6379/0"
+            ) from None
         if u.scheme not in ("redis", "rediss") or not u.hostname:
             raise ConfigError("VKTEAMS_MCP_STATE_URL must be redis://host:6379/0 or rediss://host:6379/0")
+        if u.path.strip("/") and (as_int(u.path.strip("/")) is None or as_int(u.path.strip("/")) < 0):
+            raise ConfigError("VKTEAMS_MCP_STATE_URL: the path is a database number, as in redis://host:6379/0")
         if u.username or u.password:
             raise ConfigError(
                 "VKTEAMS_MCP_STATE_URL carries a user or password: a password in a variable is visible to "

@@ -337,15 +337,39 @@ async def test_the_memory_store_follows_its_clock():
     assert await m.window_take("codes", [("a", 1)], 60) is True
 
 
-async def test_the_memory_store_is_bounded(monkeypatch):
+async def test_a_full_memory_store_refuses_newcomers_and_forgets_nothing_live(monkeypatch):
+    """Full of live entries, the store fails closed for a NEW key. It never forgets a live one: that would lift a limit,
+    free a held lock or let a spent code be spent again."""
     from vkteams_mcp.core import state
 
-    monkeypatch.setattr(state, "MEMORY_MAX", 5)
-    m = MemoryStore(derive_key(SECRET))
-    for i in range(50):
-        assert await m.once("code", str(i), 300) is True
-    assert len(m.keys()) <= 5
-    assert await m.once("code", "49", 300) is False  # the newest is the one remembered
+    monkeypatch.setattr(state, "MEMORY_MAX", 3)
+    now = [0.0]
+    m = MemoryStore(derive_key(SECRET), clock=lambda: now[0])
+    assert await m.once("code", "spent", 300) is True
+    assert await m.counter("tries", "n", 300) == 1
+    lock = await m.acquire("upload", "u", 300)
+    assert lock
+    for call in (m.once("code", "new", 300), m.counter("tries", "new", 300), m.acquire("upload", "new", 300)):
+        with pytest.raises(StateUnavailable):
+            await call
+    # nothing live was forgotten
+    assert await m.once("code", "spent", 300) is False
+    assert await m.counter("tries", "n", 300) == 2
+    assert await m.acquire("upload", "u", 300) is None
+    # windows and buckets are bounded in the same way
+    for i in range(3):
+        assert await m.window_take("codes", [(f"a{i}", 5)], 300) is True
+        assert (await m.bucket_take("bucket", f"p{i}", 10, 1.0)).ok
+    with pytest.raises(StateUnavailable):
+        await m.window_take("codes", [("a-new", 5)], 300)
+    with pytest.raises(StateUnavailable):
+        await m.bucket_take("bucket", "p-new", 10, 1.0)
+    assert await m.window_take("codes", [("a0", 5)], 300) is True  # an existing key still works
+    # once entries expire (and a second has passed), newcomers are admitted again
+    now[0] = 400.0
+    assert await m.once("code", "new", 300) is True
+    assert await m.window_take("codes", [("a-new", 5)], 300) is True
+    assert (await m.bucket_take("bucket", "p-new", 10, 1.0)).ok
 
 
 async def test_the_observed_wrapper_counts_and_follows_the_store(backend):

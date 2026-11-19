@@ -59,7 +59,7 @@ state:
   sentinel:
     hosts: []  # ["sentinel-0.example:26379", …] - Sentinel mode; not together with url
     master: mymaster
-  db: 0
+  db: 0  # Sentinel mode; with `url`, the database is the URL's path (redis://host:6379/5)
   tls: false
   username: ""  # an ACL user, optional
   # A Secret with the keys `password` and `sentinelPassword` (both optional). They are staged by the same init

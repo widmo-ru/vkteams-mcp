@@ -184,12 +184,13 @@ async def test_a_disconnect_of_a_dead_session_is_fine(fake, session):
     await VK(session, httpx.AsyncClient(transport=fake.transport())).end()
 
 
-async def test_a_full_code_cache_still_refuses_the_newest_replay(monkeypatch):
+async def test_a_full_code_cache_refuses_new_exchanges_and_never_forgets_a_spent_code(monkeypatch):
     from mcp.server.auth.provider import TokenError
     from test_oauth import a_client, code_for, registered
 
     from vkteams_mcp.core import state
     from vkteams_mcp.core.seal import Sealer
+    from vkteams_mcp.core.state import StateUnavailable
     from vkteams_mcp.oauth import provider as prov
 
     monkeypatch.setattr(state, "MEMORY_MAX", 2)
@@ -200,10 +201,16 @@ async def test_a_full_code_cache_still_refuses_the_newest_replay(monkeypatch):
     from vkteams_mcp.api.session import VKSession
 
     s = VKSession("teams.example.com", "files.example.com", 139, "d", ME, "a", "k", 0, "aim", "u", ME)
-    for _ in range(3):
+    spent = []
+    for _ in range(2):
         code = await code_for(p, s, client)
         ac = await p.load_authorization_code(client, code)
         await p.exchange_authorization_code(client, ac)
+        spent.append(ac)
+    third = await p.load_authorization_code(client, await code_for(p, s, client))
+    with pytest.raises(StateUnavailable):  # full of live marks: no new code is redeemed, none is forgotten
+        await p.exchange_authorization_code(client, third)
+    for ac in spent:
         with pytest.raises(TokenError):
             await p.exchange_authorization_code(client, ac)
 

@@ -10,15 +10,20 @@
 # to" from a skip into a failure: a contract suite that skipped everything would pass without testing anything.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-compose=(docker compose -f tests/state/compose.yml)
-cleanup() { "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true; }
+# a project of its own per run: two runs on one Docker daemon (a shared runner) must not share, or delete, each other's stores
+project="vkst$$"
+compose=(docker compose -p "$project" -f tests/state/compose.yml)
+cleanup() {
+  docker rm -f "$project-tests" >/dev/null 2>&1 || true
+  "${compose[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 "${compose[@]}" up -d --wait
 targets=("$@")
 if [ "${#targets[@]}" -eq 0 ]; then
   targets=(tests/unit/test_state_contract.py tests/unit/test_replicas_on_valkey.py)
 fi
-docker run --rm --network vkteams-state-tests_default -v "$PWD":/src:ro -w /src \
+docker run --rm --name "$project-tests" --network "${project}_default" -v "$PWD":/src:ro -w /src \
   -e UV_PROJECT_ENVIRONMENT=/tmp/venv -e UV_CACHE_DIR=/tmp/uv-cache -e PYTHONDONTWRITEBYTECODE=1 \
   -e VKTEAMS_TEST_VALKEY=valkey-master:6379 \
   -e VKTEAMS_TEST_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379 \

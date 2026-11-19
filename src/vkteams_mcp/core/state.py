@@ -114,6 +114,7 @@ class MemoryStore:
     _kv: dict[str, tuple[float, Any]] = field(default_factory=dict)
     _windows: dict[str, deque[float]] = field(default_factory=dict)
     _buckets: dict[str, _Bkt] = field(default_factory=dict)
+    _pruned_at: dict[int, float] = field(default_factory=dict)  # per table: when it was last swept
 
     def _k(self, ns: str, ident: str) -> str:
         return f"{self.prefix}{ns}:{_hashed(self.key, ns, ident)}"
@@ -127,19 +128,29 @@ class MemoryStore:
             return None
         return hit
 
-    def _room(self) -> None:
-        if len(self._kv) >= MEMORY_MAX:
-            now = self.clock()
-            for k in [k for k, (exp, _) in self._kv.items() if exp <= now]:
-                del self._kv[k]
-            while len(self._kv) >= MEMORY_MAX:  # full of live entries: forget the oldest, keep recording
-                del self._kv[next(iter(self._kv))]
+    def _admit(self, table: dict, forget: Callable[[float], None]) -> None:
+        """Called before a NEW key goes into `table`. When the table is full the expired entries go (at most once a
+        second: a full store must not be scanned on every request), and if it is still full of LIVE entries the call
+        fails closed. Forgetting a live entry would lift a limit, free a held lock or let a spent code be spent again;
+        refusing the newcomer only refuses the newcomer."""
+        if len(table) < MEMORY_MAX:
+            return
+        now = self.clock()
+        if now - self._pruned_at.get(id(table), float("-inf")) >= 1.0:
+            self._pruned_at[id(table)] = now
+            forget(now)
+        if len(table) >= MEMORY_MAX:
+            raise StateUnavailable("MemoryStoreFull")
+
+    def _forget_kv(self, now: float) -> None:
+        for k in [k for k, (exp, _) in self._kv.items() if exp <= now]:
+            del self._kv[k]
 
     async def once(self, ns: str, ident: str, ttl: float) -> bool:
         k, now = self._k(ns, ident), self.clock()
         if self._live(k, now):
             return False
-        self._room()
+        self._admit(self._kv, self._forget_kv)
         self._kv[k] = (now + ttl, 1)
         return True
 
@@ -147,7 +158,7 @@ class MemoryStore:
         k, now = self._k(ns, ident), self.clock()
         hit = self._live(k, now)
         if hit is None:
-            self._room()
+            self._admit(self._kv, self._forget_kv)
             self._kv[k] = (now + ttl, 1)
             return 1
         self._kv[k] = (hit[0], hit[1] + 1)
@@ -155,10 +166,15 @@ class MemoryStore:
 
     async def window_take(self, ns: str, checks: Sequence[tuple[str, int]], window: float) -> bool:
         now = self.clock()
-        if len(self._windows) > MEMORY_MAX:
-            for k in [k for k, q in self._windows.items() if not q or now - q[-1] >= window]:
-                del self._windows[k]
         keyed = [(self._k(ns, ident), limit) for ident, limit in checks]
+
+        def forget(at: float) -> None:
+            for k in [k for k, q in self._windows.items() if not q or at - q[-1] >= window]:
+                del self._windows[k]
+
+        for k, _ in keyed:
+            if k not in self._windows:
+                self._admit(self._windows, forget)
         for k, limit in keyed:
             q = self._windows.setdefault(k, deque())
             while q and now - q[0] >= window:
@@ -171,12 +187,15 @@ class MemoryStore:
 
     async def bucket_take(self, ns: str, ident: str, capacity: int, refill_per_second: float) -> Bucket:
         k, now = self._k(ns, ident), self.clock()
-        if len(self._buckets) > MEMORY_MAX:
-            full_after = capacity / refill_per_second
-            for key in [key for key, b in self._buckets.items() if now - b.at >= full_after]:
-                del self._buckets[key]
         b = self._buckets.get(k)
         if b is None:
+            full_after = capacity / refill_per_second
+
+            def forget(at: float) -> None:  # a bucket that has refilled to full is the same as no bucket
+                for key in [key for key, x in self._buckets.items() if at - x.at >= full_after]:
+                    del self._buckets[key]
+
+            self._admit(self._buckets, forget)
             b = self._buckets[k] = _Bkt(capacity, now)
         b.tokens = min(capacity, b.tokens + max(0.0, now - b.at) * refill_per_second)
         b.at = now
@@ -189,7 +208,7 @@ class MemoryStore:
         k, now = self._k(ns, ident), self.clock()
         if self._live(k, now):
             return None
-        self._room()
+        self._admit(self._kv, self._forget_kv)
         token = uuid.uuid4().hex
         self._kv[k] = (now + ttl, token)
         return token

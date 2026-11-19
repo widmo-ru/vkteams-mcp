@@ -9,16 +9,25 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  {{- if $shared }}
   # A rolling update, one new pod at a time and never fewer than the desired number ready. The sealing key is stable:
   # it is a Secret you own and it does not change on a deploy, so pods of an old and of a new revision hold the same
-  # key and accept each other's tokens. A deliberate rotation (a new Secret value, a new key.revision) restarts every
-  # pod; during that rollout a token sealed by a pod with the new key is refused by one with the old key, and a client
-  # signs in again once. The shared state does not depend on the pod's age.
+  # key and accept each other's tokens, and they share the state store, so a code redeemed on one is refused on the
+  # other. A deliberate rotation (a new Secret value, a new key.revision) restarts every pod; during that rollout a
+  # token sealed by a pod with the new key is refused by one with the old key, and a client may have to sign in again
+  # until the rollout is over.
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
+  {{- else }}
+  # No shared store: the pod keeps its used codes and limits in its own memory, so two pods must never serve together
+  # (each would accept a code the other has spent). A deploy replaces the pod, with a short gap, and the marks of the
+  # old pod are lost with it. Use a store to get both zero downtime and state that survives a deploy.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels: {{- include "vkteams-mcp.selectorLabels" . | nindent 6 }}
   template:
@@ -143,8 +152,10 @@ spec:
             - name: VKTEAMS_MCP_STATE_URL
               value: {{ .Values.state.url | quote }}
             {{- end }}
+            {{- if .Values.state.sentinel.hosts }}
             - name: VKTEAMS_MCP_STATE_DB
               value: {{ .Values.state.db | quote }}
+            {{- end }}
             - name: VKTEAMS_MCP_STATE_TLS
               value: {{ .Values.state.tls | quote }}
             {{- with .Values.state.username }}
@@ -156,9 +167,10 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
-          # The probes are on the metrics port, which no Service or Ingress publishes. Readiness is "key and
+          # The probes are on the metrics port, which no Ingress publishes (the chart's Service for it exists only when
+          # the ServiceMonitor is on). Readiness is "key and
           # configuration loaded", not the state store: with the store down, sign-in and sending refuse in code (and
-          # `mcp_state_store_up` is 0, and an alert fires) while reading goes on; a pod that left the Service for it
+          # `mcp_state_store_up` is 0, which you can alert on) while reading goes on; a pod that left the Service for it
           # would empty the Service for every person at once.
           startupProbe:
             httpGet:

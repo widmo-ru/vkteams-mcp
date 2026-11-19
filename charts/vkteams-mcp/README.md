@@ -9,8 +9,24 @@ helm upgrade --install vkteams-mcp oci://ghcr.io/widmo-ru/charts/vkteams-mcp --v
 ```
 
 Required: `publicUrl` (https), `key.existingSecret`, and, for the default two replicas, a store: `state.url` or
-`state.sentinel.hosts`. The chart refuses a render without them, and refuses `ingress.paths: ["/"]`, a URL and Sentinels
-together, a password inside `state.url`, and `metrics.port: 8000`.
+`state.sentinel.hosts`. Without a store the pod is single and deployed with `Recreate`.
+
+The chart refuses a render, with these messages:
+
+| Message starts | Fix |
+|---|---|
+| `publicUrl is required and must start with https://` | set `publicUrl` |
+| `key.existingSecret is required` | the Secret with the sealing key |
+| `state.url and state.sentinel.hosts are both set` | one of them |
+| `state.url must start with redis:// or rediss://` / `carries a user or password` | a plain URL; `state.username`, `state.existingSecret` |
+| `state.sentinel.hosts: … is not host:port` | `host:26379` |
+| `more than one replica needs a shared state store` | `state.url` or `state.sentinel.hosts`, or one replica |
+| `replicaCount must be at least 1` | |
+| `autoscaling.minReplicas is above autoscaling.maxReplicas` / `needs a target` | bounds; `targetCPUUtilizationPercentage` or `inFlightPerPod` |
+| `ingress.paths is empty` / `is not an explicit path` | a list of paths other than `/` |
+| `trustedProxies: … is not an address or a CIDR` | `10.0.0.0/8` |
+| `metrics.port must be another port than 8000` | |
+| `podLabels.… is set by the chart` / `podAnnotations.vkteams-mcp/key-revision is set by the chart` / `metrics.serviceMonitor.labels.… is set by the chart` | drop the key |
 
 | Key | Default | Meaning |
 |---|---|---|
