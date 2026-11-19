@@ -11,7 +11,7 @@ Many replicas, JSON logs, metrics, and a chart.
   codes (a code redeemed on one replica was accepted again on another), sign-in code requests per address and per
   network, wrong codes per sign-in step, the send allowance and the upload locks. Sessions, drafts and links stay sealed
   and are never stored. Keys are HMACs of the value under a sub-key of the sealing key: no login, address or IP in the
-  store; every key has a TTL. Nothing set is memory, right for one replica, with a warning at start.
+  store; every key has a TTL, and the scripts carry `#!lua` so a store out of memory refuses them instead of letting a limit through (Redis or Valkey 7 or later). Nothing set is memory, right for one replica, with a warning at start.
 - **A store that cannot be reached fails closed.** Sign-in, spending a code and sending refuse with "try again shortly";
   reading goes on. A refused token request answers 503 and leaves the code unspent. `/readyz` does not depend on the store.
 - **JSON logs, all of them.** Every line of every process, the init container and a failed start included, is one
@@ -20,7 +20,7 @@ Many replicas, JSON logs, metrics, and a chart.
   `LOG_LEVEL`.
 - **Metrics** on `VKTEAMS_MCP_METRICS_PORT` (9090), never the public port, with `/healthz` and `/readyz` there too:
   `mcp_http_requests_in_flight` and the family's other series (requests, tools, VK Teams calls, sign-in, refusals,
-  links, the store, `mcp_build_info`), all labelled `server="vkteams"`.
+  links, the store, `mcp_build_info`), all labelled `server="vkteams-mcp"`.
 - **`VKTEAMS_MCP_TRUSTED_PROXIES`.** Behind an ingress the per-network sign-in limit counted the whole company as one
   address; now only the listed proxies may say who the client is, and without the setting that limit is off (the
   per-address limit stays). `VKTEAMS_MCP_CA_BUNDLE` for a VK Teams server behind an internal CA.

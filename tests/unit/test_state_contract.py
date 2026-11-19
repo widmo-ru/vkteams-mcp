@@ -124,13 +124,14 @@ async def test_a_window_allows_its_limit_then_refuses(store):
 
 
 async def test_a_window_slides(store):
-    assert await store.window_take("codes", [("a", 2)], 0.5) is True
-    await asyncio.sleep(0.3)
-    assert await store.window_take("codes", [("a", 2)], 0.5) is True
-    assert await store.window_take("codes", [("a", 2)], 0.5) is False
-    await asyncio.sleep(0.3)  # the first hit is 0.6 s old: out of the window; the second is still in
-    assert await store.window_take("codes", [("a", 2)], 0.5) is True
-    assert await store.window_take("codes", [("a", 2)], 0.5) is False
+    # generous margins: the server's clock is the wall clock, which a VM may step by tens of milliseconds
+    assert await store.window_take("codes", [("a", 2)], 1.0) is True
+    await asyncio.sleep(0.6)
+    assert await store.window_take("codes", [("a", 2)], 1.0) is True
+    assert await store.window_take("codes", [("a", 2)], 1.0) is False
+    await asyncio.sleep(0.6)  # the first hit is 1.2 s old: out of the window; the second is 0.6 s old: still in
+    assert await store.window_take("codes", [("a", 2)], 1.0) is True
+    assert await store.window_take("codes", [("a", 2)], 1.0) is False
 
 
 async def test_a_refusal_records_nothing_on_any_key(store):
@@ -429,3 +430,33 @@ async def test_a_key_swept_while_making_room_is_counted_as_a_newcomer(monkeypatc
             "codes", [("a", 5), ("d", 5)], 10
         )  # a and d both need a slot after the sweep: two, one free
     assert len(m.keys()) <= 3
+
+
+async def test_a_store_out_of_memory_fails_closed(backend):
+    """With `maxmemory` reached and `noeviction`, every write is refused by the server; the store must report that
+    (StateUnavailable) and never answer "allowed". Scripts without a `#!lua` shebang were let through in this state."""
+    if backend == "memory":
+        pytest.skip("memory has its own bound (test_a_full_memory_store_refuses_newcomers_and_forgets_nothing_live)")
+    s = build_store(config_for(backend, f"t{uuid.uuid4().hex[:8]}:"), SECRET)
+    r = s._inner._r
+    token = await s.acquire("upload", "held", 30)  # one key for the release script to find
+    old_policy = (await r.config_get("maxmemory-policy"))["maxmemory-policy"]
+    old_max = (await r.config_get("maxmemory"))["maxmemory"]
+    try:
+        await r.config_set("maxmemory-policy", "noeviction")
+        await r.config_set("maxmemory", "1")
+        for call in (
+            s.once("code", "oom", 30),
+            s.counter("tries", "oom", 30),
+            s.window_take("codes", [("oom", 3)], 30),
+            s.bucket_take("bucket", "oom", 10, 1.0),
+            s.acquire("upload", "oom", 30),
+            s.release("upload", "held", token),
+        ):
+            with pytest.raises(StateUnavailable):
+                await call
+    finally:
+        await r.config_set("maxmemory", old_max)
+        await r.config_set("maxmemory-policy", old_policy)
+    assert await s.once("code", "after", 30) is True  # and it works again when memory is back
+    await s.close()

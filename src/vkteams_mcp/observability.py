@@ -31,7 +31,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 
 from vkteams_mcp import __version__
 
-SERVER = "vkteams"
+SERVER = "vkteams-mcp"
 
 # ---------------------------------------------------------------- metrics
 

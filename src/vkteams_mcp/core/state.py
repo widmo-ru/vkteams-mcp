@@ -236,14 +236,17 @@ class MemoryStore:
 # ---------------------------------------------------------------- redis / valkey
 
 # All of these run inside the server, one round trip each, so two replicas never interleave. Time is the
-# server's own (TIME), so replicas with different clocks agree.
-_COUNTER = """
+# server's own (TIME), so replicas with different clocks agree. Each starts with `#!lua`: a script with a shebang is
+# held to the server's memory limit like any write command (it fails with OOM), while one without it is run in a
+# compatibility mode that lets a script's writes through when the server is out of memory, and a limit would fail open.
+# Needs Redis or Valkey 7 or later.
+_COUNTER = """#!lua
 local n = redis.call('INCR', KEYS[1])
 if n == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 return n
 """
 
-_WINDOW = """
+_WINDOW = """#!lua
 local t = redis.call('TIME')
 local now = t[1] * 1000 + math.floor(t[2] / 1000)
 local window = tonumber(ARGV[1])
@@ -259,7 +262,7 @@ end
 return 1
 """
 
-_BUCKET = """
+_BUCKET = """#!lua
 local t = redis.call('TIME')
 local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
 local capacity = tonumber(ARGV[1])
@@ -282,7 +285,7 @@ redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate * 1000) + 1000)
 return {ok, math.floor(tokens), wait}
 """
 
-_RELEASE = """
+_RELEASE = """#!lua
 if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
 return 0
 """

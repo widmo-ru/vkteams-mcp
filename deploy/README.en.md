@@ -76,7 +76,7 @@ only what must be refused the second time wherever it lands:
 
 **Nothing in it is readable.** Every key is `<prefix><kind>:<HMAC-SHA256 of the value under a sub-key of the sealing
 key>`: no login, address or IP appears, even to someone who can read the store. Values are numbers, timestamps and
-random tokens. Every key has a TTL. Run the store with **`maxmemory-policy noeviction`**: an evicted key would lift a
+random tokens. Every key has a TTL. Run the store (Redis or Valkey **7 or later**: the scripts need a `#!lua` shebang) with **`maxmemory-policy noeviction`**: an evicted key would lift a
 limit; a write the store refuses for lack of memory is a store error and fails closed. The store may have no password
 and no TLS (inside the platform network); when it has, the password comes from a file.
 
@@ -111,7 +111,7 @@ The kubelet probes use port 9090. `/metrics` is not on the public port (404). Th
 (`ingress.paths`): `/mcp`, `/.well-known/`, `/authorize`, `/token`, `/register`, `/revoke`, `/signin`, `/static/`,
 `/files/`; `/` is refused by the chart.
 
-Metrics, all with the label `server="vkteams"`: `mcp_http_requests_in_flight{route_group}`,
+Metrics, all with the label `server="vkteams-mcp"`: `mcp_http_requests_in_flight{route_group}`,
 `mcp_http_requests_total`, `mcp_http_request_duration_seconds`, `mcp_tool_calls_total`, `mcp_tool_duration_seconds`,
 `mcp_upstream_requests_total`, `mcp_upstream_duration_seconds`, `mcp_signin_total{result}`,
 `mcp_auth_refusals_total`, `mcp_guard_refusals_total`, `mcp_link_transfers_total`, `mcp_state_store_up`,

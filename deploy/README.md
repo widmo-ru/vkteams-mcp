@@ -76,7 +76,7 @@ flowchart LR
 
 **Прочитать в нём нечего.** Каждый ключ — `<prefix><вид>:<HMAC-SHA256 значения под подключом ключа шифрования>`: ни
 логина, ни адреса, ни IP, даже для того, кто читает хранилище. Значения — числа, метки времени и случайные токены.
-У каждого ключа есть TTL. Запускайте хранилище с **`maxmemory-policy noeviction`**: вытесненный ключ снял бы лимит;
+У каждого ключа есть TTL. Запускайте хранилище (Redis или Valkey **7 и новее**: скриптам нужен shebang `#!lua`) с **`maxmemory-policy noeviction`**: вытесненный ключ снял бы лимит;
 запись, отвергнутая из-за нехватки памяти, — ошибка хранилища и закрывается отказом. Хранилище может быть без пароля и
 TLS (внутри сети платформы); если пароль есть, он берётся из файла.
 
@@ -111,7 +111,7 @@ URL вместе с Sentinel — ошибка настройки, пароль �
 (`ingress.paths`): `/mcp`, `/.well-known/`, `/authorize`, `/token`, `/register`, `/revoke`, `/signin`, `/static/`,
 `/files/`; `/` чарт отвергает.
 
-Метрики, у всех метка `server="vkteams"`: `mcp_http_requests_in_flight{route_group}`, `mcp_http_requests_total`,
+Метрики, у всех метка `server="vkteams-mcp"`: `mcp_http_requests_in_flight{route_group}`, `mcp_http_requests_total`,
 `mcp_http_request_duration_seconds`, `mcp_tool_calls_total`, `mcp_tool_duration_seconds`,
 `mcp_upstream_requests_total`, `mcp_upstream_duration_seconds`, `mcp_signin_total{result}`, `mcp_auth_refusals_total`,
 `mcp_guard_refusals_total`, `mcp_link_transfers_total`, `mcp_state_store_up`, `mcp_state_store_errors_total`,

@@ -18,7 +18,7 @@ from vkteams_mcp.instrument import Instrument, metrics_app, route_group
 
 
 def sample(name: str, **labels: str) -> float:
-    return REGISTRY.get_sample_value(name, {"server": "vkteams", **labels}) or 0.0
+    return REGISTRY.get_sample_value(name, {"server": "vkteams-mcp", **labels}) or 0.0
 
 
 def app_for(fake):
@@ -64,9 +64,9 @@ async def test_the_metrics_port_serves_metrics_the_probes_and_nothing_else():
             "python_info",
         ):
             assert f"# TYPE {name}" in r.text, name
-        assert re.search(r'^mcp_state_store_up\{server="vkteams"\} 1.0$', r.text, re.M)
+        assert re.search(r'^mcp_state_store_up\{server="vkteams-mcp"\} 1.0$', r.text, re.M)
         assert "mcp_build_info" in r.text and re.search(
-            r'^mcp_build_info\{server="vkteams",version="[^"]+"\} 1.0$', r.text, re.M
+            r'^mcp_build_info\{server="vkteams-mcp",version="[^"]+"\} 1.0$', r.text, re.M
         )
         for probe in ("/healthz", "/readyz"):
             p = await c.get(probe)

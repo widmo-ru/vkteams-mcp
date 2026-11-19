@@ -391,7 +391,7 @@ c_failover() {
       echo "sign-in on pod B: 503 at +$((now - t0))s"
       grep -qi 'try again shortly' "$work/page" || { echo "the 503 page has no 'try again shortly' sentence"; return 1; }
       # the pod that just refused saw the failure itself: its gauge is 0 (the other pods' heartbeats notice within 5 s)
-      up_gauge=$(metric 1 'mcp_state_store_up{server="vkteams"}' || true)
+      up_gauge=$(metric 1 'mcp_state_store_up{server="vkteams-mcp"}' || true)
       echo "mcp_state_store_up on pod B during the outage: ${up_gauge:-none}"
       endpoints=$(k get endpoints "$rel-vkteams-mcp" -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w | tr -d ' ')
       echo "pods in the Service during the outage: $endpoints"
@@ -451,9 +451,9 @@ c_metrics() {
   for i in 0 1 2; do
     body=$(curl -fsS --max-time 5 "http://127.0.0.1:${MET[$i]}/metrics") || { echo "pod $i: no /metrics on 9090"; return 1; }
     [ -n "$body" ] || { echo "pod $i: empty /metrics"; return 1; }
-    echo "$body" | grep -q '^mcp_http_requests_in_flight{route_group="mcp",server="vkteams"}' \
+    echo "$body" | grep -q '^mcp_http_requests_in_flight{route_group="mcp",server="vkteams-mcp"}' \
       || { echo "pod $i: no mcp_http_requests_in_flight"; return 1; }
-    echo "$body" | grep -q '^mcp_state_store_up{server="vkteams"} 1.0$' || { echo "pod $i: mcp_state_store_up is not 1"; return 1; }
+    echo "$body" | grep -q '^mcp_state_store_up{server="vkteams-mcp"} 1.0$' || { echo "pod $i: mcp_state_store_up is not 1"; return 1; }
     [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $host" "http://127.0.0.1:${PUB[$i]}/metrics")" = 404 ] \
       || { echo "pod $i: the public port serves /metrics"; return 1; }
     for probe in healthz readyz; do
