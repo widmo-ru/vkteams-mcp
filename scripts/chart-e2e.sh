@@ -24,7 +24,7 @@ work=$(mktemp -d)
 cluster=${KIND_CLUSTER:-vk-state}
 # Only this kind cluster is visible to everything below (kubectl, helm, new-sealing-key.sh): the default kubeconfig can
 # hold any number of other clusters, and another kind cluster's `kind create` moves its current context.
-kind get clusters | grep -qx "$cluster" || { echo "no kind cluster named $cluster"; exit 1; }
+kind get clusters | grep -Fx -- "$cluster" >/dev/null || { echo "no kind cluster named $cluster"; exit 1; }
 kind export kubeconfig --name "$cluster" --kubeconfig "$work/kubeconfig"
 export KUBECONFIG="$work/kubeconfig"
 run=$(date +%s)  # addresses carry it: a rerun against the same Valkey must not meet the limits of the last one

@@ -398,3 +398,16 @@ async def test_a_dead_store_is_counted_and_the_gauge_goes_down_then_up():
     await m.ping()
     assert obs.STATE_UP.labels(obs.SERVER)._value.get() == 1
     await s.close()
+
+
+async def test_a_call_with_several_new_keys_needs_room_for_all_of_them(monkeypatch):
+    """CodeLimiter counts an address and a network in one call: with room for one of the two, neither is counted."""
+    from vkteams_mcp.core import state
+
+    monkeypatch.setattr(state, "MEMORY_MAX", 3)
+    m = MemoryStore(derive_key(SECRET))
+    assert await m.window_take("codes", [("a", 5), ("b", 5)], 300) is True
+    with pytest.raises(StateUnavailable):
+        await m.window_take("codes", [("c", 5), ("d", 5)], 300)  # one free slot, two newcomers
+    assert len(m.keys()) == 2  # nothing of the refused call was recorded
+    assert await m.window_take("codes", [("c", 5)], 300) is True

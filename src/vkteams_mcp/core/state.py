@@ -128,18 +128,18 @@ class MemoryStore:
             return None
         return hit
 
-    def _admit(self, table: dict, forget: Callable[[float], None]) -> None:
+    def _admit(self, table: dict, forget: Callable[[float], None], new: int = 1) -> None:
         """Called before a NEW key goes into `table`. When the table is full the expired entries go (at most once a
         second: a full store must not be scanned on every request), and if it is still full of LIVE entries the call
         fails closed. Forgetting a live entry would lift a limit, free a held lock or let a spent code be spent again;
         refusing the newcomer only refuses the newcomer."""
-        if len(table) < MEMORY_MAX:
+        if len(table) + new <= MEMORY_MAX:
             return
         now = self.clock()
         if now - self._pruned_at.get(id(table), float("-inf")) >= 1.0:
             self._pruned_at[id(table)] = now
             forget(now)
-        if len(table) >= MEMORY_MAX:
+        if len(table) + new > MEMORY_MAX:
             raise StateUnavailable("MemoryStoreFull")
 
     def _forget_kv(self, now: float) -> None:
@@ -172,9 +172,9 @@ class MemoryStore:
             for k in [k for k, q in self._windows.items() if not q or at - q[-1] >= window]:
                 del self._windows[k]
 
-        for k, _ in keyed:
-            if k not in self._windows:
-                self._admit(self._windows, forget)
+        newcomers = {k for k, _ in keyed if k not in self._windows}
+        if newcomers:  # room for ALL the new keys of this call, or none is counted
+            self._admit(self._windows, forget, len(newcomers))
         for k, limit in keyed:
             q = self._windows.setdefault(k, deque())
             while q and now - q[0] >= window:
@@ -461,7 +461,7 @@ def build_store(cfg: StateConfig, secret: str) -> StateStore:
         )
     else:
         u = urlsplit(cfg.url)
-        db = cfg.db if cfg.db is not None else int((u.path or "/0").lstrip("/") or 0)
+        db = cfg.db if cfg.db is not None else int(u.path.strip("/") or 0)
         client = Redis(
             host=u.hostname or "localhost",
             port=u.port or 6379,

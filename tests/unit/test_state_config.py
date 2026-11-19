@@ -181,9 +181,27 @@ def test_a_bare_or_broken_ipv6_sentinel_is_refused(base, item):
 
 
 @pytest.mark.parametrize(
-    "url", ["redis://[::1", "redis://h:bad/0", "redis://h/not-a-db", "redis://h:99999999999/0", "redis://h/-1"]
+    "url",
+    [
+        "redis://[::1",
+        "redis://h:bad/0",
+        "redis://h/not-a-db",
+        "redis://h:99999999999/0",
+        "redis://h/-1",
+        "redis://h/0/x",
+    ],
 )
 def test_a_malformed_state_url_is_a_config_error_not_a_crash_later(base, url):
     with pytest.raises(ConfigError) as e:
         state_of(base, VKTEAMS_MCP_STATE_URL=url)
     assert "STATE_URL" in str(e.value)
+
+
+def test_a_url_with_a_trailing_slash_builds_a_store(base):
+    from vkteams_mcp.core.state import build_store
+
+    for url, db in (("redis://h:6379/0/", 0), ("redis://h:6379/3/", 3), ("redis://h:6379/", 0), ("redis://h:6379", 0)):
+        cfg = state_of(base, VKTEAMS_MCP_STATE_URL=url)
+        store = build_store(cfg, "k" * 40)
+        pool = store._inner._r.connection_pool
+        assert pool.connection_kwargs["db"] == db, url

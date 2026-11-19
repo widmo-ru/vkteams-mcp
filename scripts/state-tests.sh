@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # a project of its own per run: two runs on one Docker daemon (a shared runner) must not share, or delete, each other's stores
-project="vkst$$"
+project="vkst-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
 compose=(docker compose -p "$project" -f tests/state/compose.yml)
 cleanup() {
   docker rm -f "$project-tests" >/dev/null 2>&1 || true

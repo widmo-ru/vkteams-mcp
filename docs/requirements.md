@@ -179,6 +179,10 @@ partial result: the tool reports who failed and why.
 | a fourth code request for one address, across replicas | tests/unit/test_replicas_on_valkey.py::test_code_requests_are_limited_across_replicas |
 | an eleventh outward action, across replicas | tests/unit/test_replicas_on_valkey.py::test_the_send_allowance_is_one_bucket_across_replicas |
 | a second upload of a link while one runs | tests/unit/test_files.py::test_a_link_is_busy_while_an_upload_of_it_runs_and_free_after |
+| a state URL that is malformed (`VKTEAMS_MCP_STATE_URL is not a URL: use redis://host:6379/0 or rediss://host:6379/0`; `VKTEAMS_MCP_STATE_URL: the path is a database number, as in redis://host:6379/0`) | tests/unit/test_state_config.py::test_a_malformed_state_url_is_a_config_error_not_a_crash_later |
+| a Sentinel address with an IPv6 host without brackets (`VKTEAMS_MCP_STATE_SENTINELS: '…' is not host:port (an IPv6 address goes in [brackets])`) | tests/unit/test_state_config.py::test_a_bare_or_broken_ipv6_sentinel_is_refused |
+| a new key when the memory store (no shared store configured) is full of live entries: the same "cannot reach its shared state" answer, though no connection failed; live entries are kept and service resumes as they expire (do not restart to clear it: that clears the limits) | tests/unit/test_state_contract.py::test_a_full_memory_store_refuses_newcomers_and_forgets_nothing_live |
+| a call with several new keys when there is room for fewer: none of them is counted | tests/unit/test_state_contract.py::test_a_call_with_several_new_keys_needs_room_for_all_of_them |
 | a login, address or IP in a state store key | tests/unit/test_state_contract.py::test_no_key_carries_a_login_an_address_or_an_ip |
 | a log record that looks like content | tests/unit/test_logs.py::test_a_record_that_looks_like_content_is_dropped_and_counted |
 | an exception message in a log line | tests/unit/test_logs.py::test_a_traceback_is_frames_and_types_never_messages |
