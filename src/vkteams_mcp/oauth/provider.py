@@ -1,4 +1,5 @@
-"""OAuth 2.1 authorization server for MCP clients, in front of a VK Teams sign-in. It stores nothing.
+"""OAuth 2.1 authorization server for MCP clients, in front of a VK Teams sign-in. It stores nothing,
+except one mark in the shared state store (`core.state`): that an authorization code was redeemed.
 
 Every artefact of the flow is a sealed blob (`core.seal`) that carries what the next step needs:
 
@@ -12,11 +13,13 @@ Every artefact of the flow is a sealed blob (`core.seal`) that carries what the 
 
 The client refreshes its tokens itself, by the standard; a refresh hands back new tokens with the
 freshest session this replica knows. Any number of replicas serve the same tokens if they share the
-secret. Revoking a token ends the VK Teams session itself, which kills every token that carries it.
+secret, and a code redeemed on one replica is refused on every other.
+Revoking a token ends the VK Teams session itself, which kills every token that carries it.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlsplit
@@ -26,20 +29,23 @@ from mcp.server.auth.provider import (
     AuthorizationCode,
     AuthorizationParams,
     RefreshToken,
+    TokenError,
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
 
+from vkteams_mcp import observability
 from vkteams_mcp.api.session import VKSession
 from vkteams_mcp.core.seal import Sealer, person_id
+from vkteams_mcp.core.state import MemoryStore, StateStore
 
 ACCESS_TTL = 3600
 REFRESH_TTL = 30 * 24 * 3600
 CODE_TTL = 300
 SIGN_IN_TTL = 15 * 60
 CLIENT_TTL = 10 * 365 * 24 * 3600
-USED_CODES_MAX = 10_000
+CODE_MARK_SLACK = 5  # seconds the mark outlives the code: replicas' clocks are not the same clock
 
 
 class Provider:
@@ -52,6 +58,7 @@ class Provider:
         latest: Callable[[str, VKSession], VKSession] = lambda _p, s: s,
         end_session: Callable[[VKSession], Awaitable[None]] | None = None,
         clock: Callable[[], float] = time.time,
+        store: StateStore | None = None,
     ) -> None:
         self.sealer = sealer
         self._secret = secret
@@ -59,9 +66,8 @@ class Provider:
         self._latest = latest  # the freshest session this replica has seen for a person
         self._end_session = end_session
         self._clock = clock
-        # A code is single-use per replica. Across replicas a second exchange needs the code and the PKCE
-        # verifier, which only the client holds, within the code's five minutes.
-        self._used_codes: dict[str, float] = {}
+        # A code is single-use across every replica: the first exchange marks it in the shared store.
+        self.store: StateStore = store or MemoryStore(os.urandom(32))
 
     def person(self, session: VKSession) -> str:
         return person_id(session.host, session.login, self._secret)
@@ -119,7 +125,7 @@ class Provider:
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> AuthorizationCode | None:
         p = self.sealer.open("code", authorization_code)
-        if p is None or p["client_id"] != client.client_id or authorization_code in self._used_codes:
+        if p is None or p["client_id"] != client.client_id:
             return None
         return AuthorizationCode(
             code=authorization_code,
@@ -136,12 +142,13 @@ class Provider:
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        now = self._clock()
-        for k in [k for k, exp in self._used_codes.items() if exp < now]:
-            del self._used_codes[k]
-        while len(self._used_codes) >= USED_CODES_MAX:  # full of live codes: forget the oldest, keep recording
-            del self._used_codes[next(iter(self._used_codes))]
-        self._used_codes[authorization_code.code] = authorization_code.expires_at
+        """The SDK has checked the code and the PKCE verifier; this is where the code is spent. The mark is set
+        before anything is issued, so two exchanges of one code, on one replica or on two, cannot both win. A
+        store that cannot be asked raises StateUnavailable: the code stays unspent and the client may try again."""
+        left = max(1.0, authorization_code.expires_at - self._clock()) + CODE_MARK_SLACK
+        if not await self.store.once("code", authorization_code.code, left):
+            observability.inc(observability.AUTH_REFUSALS, "code_reused")
+            raise TokenError("invalid_grant", "authorization code was already used")
         session = VKSession.from_json(authorization_code.subject or "")
         return self._issue(client.client_id, session, authorization_code.scopes, authorization_code.resource)
 

@@ -35,7 +35,7 @@ async def save_chat(
         if not chat:
             if not (title or "").strip():
                 raise invalid("A new group needs title. Nothing was created.")
-            receipt = c.rt.guard.spend(c.person, kind="chat")
+            receipt = await c.rt.guard.spend(c.person, kind="chat")
             # the desktop client's defaults for a private group: not public, not a live chat
             params = {"name": title.strip(), "aimSid": c.vk.s.aimsid, "about": about, "live": False, "public": False}
             r = await c.vk.rapi("createChat", {k: v for k, v in params.items() if v is not None}, write=True)
@@ -63,7 +63,7 @@ async def save_chat(
         change = {"name": title, "about": about, "rules": rules, "threadsEnabled": threads}
         if all(v is None for v in change.values()):
             raise invalid("Nothing to change: give title, about, rules or threads.")
-        receipt = c.guard(kind="chat", user_confirmed=user_confirmed, target=sn)
+        receipt = await c.guard(kind="chat", user_confirmed=user_confirmed, target=sn)
         await c.vk.rapi("modChat", {"sn": sn, **{k: v for k, v in change.items() if v is not None}}, write=True)
         forget_index(c)
         return {"chat": sn, "done": "changed", **receipt}
@@ -92,7 +92,7 @@ async def update_chat_members(
         if len(people) > MAX_PEOPLE:
             raise VKError("too_many", limit=MAX_PEOPLE, what="people", count=len(people))
         who = list(dict.fromkeys([await resolve_person(c, p) for p in people]))  # a name and its address are one
-        receipt = c.guard(kind="members", user_confirmed=user_confirmed, people=len(who), target=sn)
+        receipt = await c.guard(kind="members", user_confirmed=user_confirmed, people=len(who), target=sn)
         failures: list = []
         if action == "add":
             r = await c.vk.rapi("group/members/add", {"sn": sn, "members": who}, write=True)

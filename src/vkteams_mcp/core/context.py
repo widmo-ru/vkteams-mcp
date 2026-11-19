@@ -26,6 +26,7 @@ from vkteams_mcp.core.cursor import Cursors
 from vkteams_mcp.core.errors import VKError
 from vkteams_mcp.core.guard import Guard
 from vkteams_mcp.core.seal import Sealer, person_id
+from vkteams_mcp.core.state import MemoryStore, Observed, StateStore, derive_key
 
 FRESH_TTL = 3600
 FRESH_MAX = 10_000
@@ -35,7 +36,8 @@ FRESH_MAX = 10_000
 class Runtime:
     settings: Settings
     http: httpx.AsyncClient
-    guard: Guard = field(default_factory=Guard)
+    store: StateStore | None = None  # None: memory, one replica (the app builds the configured store)
+    guard: Guard | None = None
     clock: Callable[[], float] = time.time
     cursors: Cursors = field(init=False)
     sealer: Sealer = field(init=False)
@@ -46,6 +48,10 @@ class Runtime:
     def __post_init__(self) -> None:
         self.cursors = Cursors(hashlib.sha256(b"cursor-key\n" + self.settings.secret.encode()).digest())
         self.sealer = Sealer(self.settings.secret, self.clock)
+        if self.store is None:
+            self.store = Observed(MemoryStore(derive_key(self.settings.secret), self.settings.state.prefix))
+        if self.guard is None:
+            self.guard = Guard(self.store)
 
     def person(self, session: VKSession) -> str:
         return person_id(session.host, session.login, self.settings.secret)
@@ -86,8 +92,12 @@ class Call:
     vk: VK
     rt: Runtime
 
-    def guard(self, *, kind: str, user_confirmed: bool | None, people: int = 0, target: str | None = None) -> dict:
-        return self.rt.guard.check(self.person, kind=kind, user_confirmed=user_confirmed, people=people, target=target)
+    async def guard(
+        self, *, kind: str, user_confirmed: bool | None, people: int = 0, target: str | None = None
+    ) -> dict:
+        return await self.rt.guard.check(
+            self.person, kind=kind, user_confirmed=user_confirmed, people=people, target=target
+        )
 
     def cursor_in(self, cursor: str | None, scope: dict | None = None) -> dict | None:
         """The position a cursor holds; `scope` is the arguments that chose the list, and must match."""

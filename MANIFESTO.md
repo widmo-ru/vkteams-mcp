@@ -73,8 +73,11 @@ We check every request shape against a live server (`docs/live-findings.md`).
 18. **The server keeps nothing.** The person's VK Teams credentials (`a` token, session key, `aimsid`)
     travel inside their OAuth tokens, a draft inside its draft token, the sign-in step inside its form,
     a file link inside its URL: each sealed with AES-GCM under a key from the environment and bound to
-    its kind. Any replica with the same secret serves any request. *Violation:* a database, a file or a
-    shared store holding a session or a draft; a credential in clear in a token, a URL or a log.
+    its kind. Any replica with the same secret serves any request. The only thing shared between replicas is a
+    small store of counters and one-use marks (a redeemed code, sign-in limits, the send allowance, an upload
+    lock): keys are HMACs, values are numbers and tokens, every key has a TTL. *Violation:* a database, a file or
+    the shared store holding a session, a draft, an address or a credential; a credential in clear in a token, a
+    URL or a log.
 
 ## III. A public server
 

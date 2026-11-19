@@ -1,0 +1,264 @@
+{{- include "vkteams-mcp.validate" . }}
+{{- $shared := include "vkteams-mcp.sharedState" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vkteams-mcp.fullname" . }}
+  labels: {{- include "vkteams-mcp.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  {{- if $shared }}
+  # A rolling update, one new pod at a time and never fewer than the desired number ready. The sealing key is stable:
+  # it is a Secret you own and it does not change on a deploy, so pods of an old and of a new revision hold the same
+  # key and accept each other's tokens, and they share the state store, so a code redeemed on one is refused on the
+  # other. A deliberate rotation (a new Secret value, a new key.revision) restarts every pod; during that rollout a
+  # token sealed by a pod with the new key is refused by one with the old key, and a client may have to sign in again
+  # until the rollout is over.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  {{- else }}
+  # No shared store: the pod keeps its used codes and limits in its own memory, so two pods must never serve together
+  # (each would accept a code the other has spent). A deploy replaces the pod, with a short gap, and the marks of the
+  # old pod are lost with it. Use a store to get both zero downtime and state that survives a deploy.
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels: {{- include "vkteams-mcp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vkteams-mcp.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{ end }}
+      annotations:
+        # a rotated key restarts every pod, which stages it again
+        vkteams-mcp/key-revision: {{ .Values.key.revision | quote }}
+        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{ end }}
+    spec:
+      # the server never calls the Kubernetes API: no API token in the pod
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # The only container that mounts the Secrets. It copies the sealing key (and the state store's passwords) to
+        # a memory volume as files that the server's user alone may read; the server container never sees a Secret.
+        # The same image, so staging needs no registry the server does not already need.
+        - name: stage-keys
+          image: {{ include "vkteams-mcp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - -m
+            - vkteams_mcp.stage
+            - /secret/{{ .Values.key.secretKey }}:/run/vkteams-mcp/key
+            {{- if .Values.state.existingSecret }}
+            - --optional
+            - /state-secret/password:/run/vkteams-mcp/state-password
+            - /state-secret/sentinelPassword:/run/vkteams-mcp/state-sentinel-password
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: secret
+              mountPath: /secret
+              readOnly: true
+            {{- if .Values.state.existingSecret }}
+            - name: state-secret
+              mountPath: /state-secret
+              readOnly: true
+            {{- end }}
+            - name: keys
+              mountPath: /run/vkteams-mcp
+      containers:
+        - name: server
+          image: {{ include "vkteams-mcp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8000
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+          env:
+            - name: VKTEAMS_MCP_PUBLIC_URL
+              value: {{ .Values.publicUrl | quote }}
+            - name: VKTEAMS_MCP_KEY_FILE
+              value: /run/vkteams-mcp/key
+            - name: VKTEAMS_MCP_METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- with .Values.trustedProxies }}
+            - name: VKTEAMS_MCP_TRUSTED_PROXIES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            - name: VKTEAMS_MCP_TIMEZONE
+              value: {{ .Values.vkteams.timezone | quote }}
+            {{- with .Values.vkteams.devId }}
+            - name: VKTEAMS_MCP_DEV_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.vkteams.installations }}
+            - name: VKTEAMS_MCP_INSTALLATIONS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- if .Values.vkteams.allowPrivateNetworks }}
+            - name: VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS
+              value: "1"
+            {{- end }}
+            {{- if .Values.vkteams.caBundle.configMap }}
+            - name: VKTEAMS_MCP_CA_BUNDLE
+              value: /etc/vkteams-mcp/ca/{{ .Values.vkteams.caBundle.key }}
+            {{- end }}
+            {{- with .Values.areas }}
+            - name: VKTEAMS_MCP_AREAS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- if $shared }}
+            {{- if .Values.state.sentinel.hosts }}
+            - name: VKTEAMS_MCP_STATE_SENTINELS
+              value: {{ join "," .Values.state.sentinel.hosts | quote }}
+            - name: VKTEAMS_MCP_STATE_SENTINEL_MASTER
+              value: {{ .Values.state.sentinel.master | quote }}
+            {{- else }}
+            - name: VKTEAMS_MCP_STATE_URL
+              value: {{ .Values.state.url | quote }}
+            {{- end }}
+            {{- if .Values.state.sentinel.hosts }}
+            - name: VKTEAMS_MCP_STATE_DB
+              value: {{ .Values.state.db | quote }}
+            {{- end }}
+            - name: VKTEAMS_MCP_STATE_TLS
+              value: {{ .Values.state.tls | quote }}
+            {{- with .Values.state.username }}
+            - name: VKTEAMS_MCP_STATE_USERNAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.state.prefix }}
+            - name: VKTEAMS_MCP_STATE_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          # The probes are on the metrics port, which no Ingress publishes (the chart's Service for it exists only when
+          # the ServiceMonitor is on). Readiness is "key and
+          # configuration loaded", not the state store: with the store down, sign-in and sending refuse in code (and
+          # `mcp_state_store_up` is 0, which you can alert on) while reading goes on; a pod that left the Service for it
+          # would empty the Service for every person at once.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 30
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]  # the Service stops sending before the process stops answering
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: keys
+              mountPath: /run/vkteams-mcp
+              readOnly: true
+            {{- if .Values.vkteams.caBundle.configMap }}
+            - name: ca
+              mountPath: /etc/vkteams-mcp/ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            {{- with .Values.tmp.medium }}
+            medium: {{ . }}
+            {{- end }}
+            sizeLimit: {{ .Values.tmp.sizeLimit }}
+        - name: keys
+          emptyDir:
+            medium: Memory  # tmpfs, gone with the pod; on the node's disk only if the node swaps
+            sizeLimit: 1Mi
+        - name: secret
+          secret:
+            secretName: {{ .Values.key.existingSecret }}
+            defaultMode: 0440  # root:fsGroup; the init container reads it through the pod's group
+        {{- if .Values.state.existingSecret }}
+        - name: state-secret
+          secret:
+            secretName: {{ .Values.state.existingSecret }}
+            defaultMode: 0440
+            optional: true  # the keys are optional too: a Valkey without a password needs no Secret
+        {{- end }}
+        {{- if .Values.vkteams.caBundle.configMap }}
+        - name: ca
+          configMap:
+            name: {{ .Values.vkteams.caBundle.configMap }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {{- include "vkteams-mcp.selectorLabels" . | nindent 20 }}
+        {{- end }}
+      topologySpreadConstraints:
+        {{- if .Values.topologySpreadConstraints }}
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+        {{- else }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "vkteams-mcp.selectorLabels" . | nindent 14 }}
+        {{- end }}

@@ -75,9 +75,7 @@ def test_a_key_path_that_is_a_fifo_is_refused_without_blocking(tmp_path):
     assert "not a regular file" in str(e.value)
 
 
-def test_the_server_does_not_start_when_linux_refuses_non_dumpable(tmp_path, monkeypatch):
-    import uvicorn
-
+def test_the_server_does_not_start_when_linux_refuses_non_dumpable(tmp_path, monkeypatch, restore_logging):
     from vkteams_mcp import app
 
     f = key_file(tmp_path, KEY_A)
@@ -85,10 +83,10 @@ def test_the_server_does_not_start_when_linux_refuses_non_dumpable(tmp_path, mon
     monkeypatch.setenv("VKTEAMS_MCP_KEY_FILE", str(f))
     monkeypatch.setattr(app, "make_undumpable", lambda: False)
 
-    def serving(*a, **kw):
+    async def serving(*a, **kw):
         raise AssertionError("the server started without the protection")
 
-    monkeypatch.setattr(uvicorn, "run", serving)
+    monkeypatch.setattr(app, "serve", serving)
     with pytest.raises(SystemExit) as e:
         app.main()
     assert e.value.code == 2
@@ -187,33 +185,39 @@ def test_a_short_key_in_the_file_is_refused(tmp_path):
     assert "32" in str(e.value) and "too-short" not in str(e.value)
 
 
-def test_a_leftover_secret_variable_still_starts_the_server_with_a_warning(tmp_path, monkeypatch, caplog):
-    """One release of grace: a deployment that still passes VKTEAMS_MCP_SECRET keeps running, and keeps
-    its sessions, instead of crash-looping on upgrade."""
-    caplog.set_level(logging.WARNING)
-    monkeypatch.setenv("VKTEAMS_MCP_SECRET", KEY_A)
+def test_a_secret_variable_is_refused_and_the_error_names_it_and_the_migration(tmp_path):
+    """Deprecated in 0.3.0 with the promise that the next release refuses it: the server does not start."""
     env = env_with(tmp_path / "absent", VKTEAMS_MCP_SECRET=KEY_A)
-    s = Settings.from_env(env)
-    assert s.secret == KEY_A
-    warned = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
-    assert "VKTEAMS_MCP_SECRET" in warned and "next release" in warned and KEY_A not in warned
+    with pytest.raises(ConfigError) as e:
+        Settings.from_env(env)
+    msg = str(e.value)
+    assert "VKTEAMS_MCP_SECRET" in msg and "no longer accepted" in msg and "Moving from 0.3.x" in msg
+    assert KEY_A not in msg
 
 
-def test_the_secret_variable_is_dropped_from_the_process_environment(tmp_path, monkeypatch):
+def test_a_secret_variable_is_refused_even_when_a_key_file_exists(tmp_path):
+    f = key_file(tmp_path, KEY_B)
+    with pytest.raises(ConfigError) as e:
+        Settings.from_env(env_with(f, VKTEAMS_MCP_SECRET=KEY_A))
+    assert "VKTEAMS_MCP_SECRET" in str(e.value) and KEY_A not in str(e.value) and KEY_B not in str(e.value)
+
+
+def test_the_secret_variable_is_dropped_from_the_process_environment_even_when_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("VKTEAMS_MCP_PUBLIC_URL", PUBLIC)
     monkeypatch.setenv("VKTEAMS_MCP_KEY_FILE", str(tmp_path / "absent"))
     monkeypatch.setenv("VKTEAMS_MCP_SECRET", KEY_A)
-    assert Settings.from_env().secret == KEY_A
+    with pytest.raises(ConfigError):
+        Settings.from_env()
     assert "VKTEAMS_MCP_SECRET" not in os.environ
 
 
-def test_the_key_file_wins_over_a_leftover_secret_variable(tmp_path, caplog):
-    caplog.set_level(logging.WARNING)
-    f = key_file(tmp_path, KEY_B)
-    s = Settings.from_env(env_with(f, VKTEAMS_MCP_SECRET=KEY_A))
-    assert s.secret == KEY_B
-    warned = "\n".join(r.getMessage() for r in caplog.records)
-    assert "ignored" in warned and KEY_A not in warned and KEY_B not in warned
+def test_the_start_with_a_secret_variable_exits_2_with_one_json_line(tmp_path):
+    from test_logs import env_for, every_line_is_json, run
+
+    p = run(["-m", "vkteams_mcp.app"], env_for(tmp_path, VKTEAMS_MCP_SECRET=KEY_A))
+    assert p.returncode == 2
+    last = every_line_is_json(p.stderr)[-1]
+    assert last["event"] == "config_error" and "VKTEAMS_MCP_SECRET" in last["msg"] and KEY_A not in p.stderr
 
 
 # ------------------------------------------------------------ a deploy, a restart, signing in again

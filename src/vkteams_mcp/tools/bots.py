@@ -57,7 +57,7 @@ async def respond_to_bot(
             if not data:
                 raise invalid("That button opens a link; give the person its url instead. Nothing was done.")
             pressed = content_line("bot", str(keys[n - 1].get("text", "")))
-        receipt = c.guard(kind="bot", user_confirmed=user_confirmed, target=bot)
+        receipt = await c.guard(kind="bot", user_confirmed=user_confirmed, target=bot)
         if action == "start":
             await c.vk.rapi("startBot", {"bot": bot, "startParameter": parameter or ""}, write=True)
             return {"bot": bot, "done": "started", **receipt}

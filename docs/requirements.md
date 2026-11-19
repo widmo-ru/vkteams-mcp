@@ -81,7 +81,7 @@ Args: `chat`, `draft` (from `save_draft`), `files?` (the sealed file each upload
 `user_confirmed`. Sends the draft as saved with
 `rapi/message/send {target, localMsgId, parts:{mainPart, quoteParts}, schedule?}`. Refuses a draft made
 for another person or chat, an altered or expired one, and a draft whose uploads are not all in
-`files`. Upload links expire after 600 s; an upload runs once at a time per replica and may be repeated within
+`files`. Upload links expire after 600 s; an upload of one link runs once at a time on any replica (a lock in the shared state store) and may be repeated within
 the link's life (a lost response); an empty upload is refused (400)
 and one over 100 MB too (413); at most three uploads are received at once per replica. Files go first,
 at the draft's send time too. Each part has a `localMsgId` fixed in the draft, and VK Teams answers a
@@ -151,7 +151,7 @@ partial result: the tool reports who failed and why.
 
 | Refusal | Test |
 |---|---|
-| starting with no key file and no VKTEAMS_MCP_SECRET | tests/unit/test_key.py::test_a_missing_key_file_refuses_to_start_and_says_why |
+| starting with no key file | tests/unit/test_key.py::test_a_missing_key_file_refuses_to_start_and_says_why |
 | a key file the group or anyone else can read | tests/unit/test_key.py::test_a_key_file_readable_by_others_is_refused |
 | a key file owned by another user | tests/unit/test_key.py::test_a_key_file_of_another_user_is_refused |
 | starting on Linux when prctl(PR_SET_DUMPABLE) is refused | tests/unit/test_key.py::test_the_server_does_not_start_when_linux_refuses_non_dumpable |
@@ -161,6 +161,35 @@ partial result: the tool reports who failed and why.
 | a key file that is not UTF-8 text | tests/unit/test_key.py::test_a_key_that_is_not_text_is_refused |
 | a key longer than 4096 bytes, rather than a shortened one | tests/unit/test_key.py::test_a_key_longer_than_the_limit_is_refused_not_shortened |
 | a token, refresh or registration sealed under a previous deploy's key | tests/unit/test_key.py::test_a_new_key_signs_everyone_out_once_and_they_sign_in_again |
+
+### The shared state store (many replicas)
+
+| Refusal | Test |
+|---|---|
+| an authorization code redeemed twice, on one replica or on two | tests/unit/test_oauth.py::test_a_code_is_used_once, tests/unit/test_replicas_on_valkey.py::test_a_code_redeemed_on_one_replica_is_refused_on_the_other |
+| starting with VKTEAMS_MCP_SECRET set | tests/unit/test_key.py::test_a_secret_variable_is_refused_and_the_error_names_it_and_the_migration |
+| a state store URL together with Sentinels | tests/unit/test_state_config.py::test_a_url_and_sentinels_together_are_a_config_error |
+| a password in the state store URL | tests/unit/test_state_config.py::test_a_password_in_the_url_is_refused_and_not_echoed |
+| a state store password file others can read | tests/unit/test_state_config.py::test_a_password_file_others_can_read_is_refused |
+| sending while the state store is down: "This server cannot reach its shared state right now, so it cannot check the limit on actions other people see, and it does not take them. {outcome} Try again shortly." (`{outcome}` is the kind's "Nothing was sent." and the like); not the VK Teams "throttled" sentence | tests/unit/test_state_failclosed.py::test_sending_is_refused_and_nothing_is_sent |
+| signing in while the state store is down | tests/unit/test_state_failclosed.py::test_sign_in_refuses_a_step_it_cannot_count |
+| a code exchange the store cannot record: 503 `temporarily_unavailable`, `Retry-After: 5`, no token issued; the code is normally still unspent, but if the store lost its reply after recording the mark it is spent and the client starts sign-in again | tests/unit/test_state_failclosed.py::test_the_token_endpoint_answers_503_and_leaves_the_code_unspent |
+| an upload the store cannot lock: HTTP 503 `This server cannot check the link right now. Try again shortly.` with `Retry-After: 5` | tests/unit/test_state_failclosed.py::test_an_upload_is_refused_with_503_and_nothing_reaches_vk_teams |
+| a sixth wrong code for one sign-in step, across replicas | tests/unit/test_replicas_on_valkey.py::test_wrong_codes_are_counted_across_replicas |
+| a fourth code request for one address, across replicas | tests/unit/test_replicas_on_valkey.py::test_code_requests_are_limited_across_replicas |
+| an eleventh outward action, across replicas | tests/unit/test_replicas_on_valkey.py::test_the_send_allowance_is_one_bucket_across_replicas |
+| a second upload of a link while one runs | tests/unit/test_files.py::test_a_link_is_busy_while_an_upload_of_it_runs_and_free_after |
+| a state URL that is malformed (`VKTEAMS_MCP_STATE_URL is not a URL: use redis://host:6379/0 or rediss://host:6379/0`; `VKTEAMS_MCP_STATE_URL: the path is a database number, as in redis://host:6379/0`) | tests/unit/test_state_config.py::test_a_malformed_state_url_is_a_config_error_not_a_crash_later |
+| a Sentinel address with an IPv6 host without brackets (`VKTEAMS_MCP_STATE_SENTINELS: '…' is not host:port (an IPv6 address goes in [brackets])`) | tests/unit/test_state_config.py::test_a_bare_or_broken_ipv6_sentinel_is_refused |
+| a new key when the memory store (no shared store configured) is full of live entries: the same "cannot reach its shared state" answer, though no connection failed; live entries are kept and service resumes as they expire (do not restart to clear it: that clears the limits) | tests/unit/test_state_contract.py::test_a_full_memory_store_refuses_newcomers_and_forgets_nothing_live |
+| a call with several new keys when there is room for fewer: none of them is counted | tests/unit/test_state_contract.py::test_a_call_with_several_new_keys_needs_room_for_all_of_them |
+| a login, address or IP in a state store key | tests/unit/test_state_contract.py::test_no_key_carries_a_login_an_address_or_an_ip |
+| a log record that looks like content | tests/unit/test_logs.py::test_a_record_that_looks_like_content_is_dropped_and_counted |
+| an exception message in a log line | tests/unit/test_logs.py::test_a_traceback_is_frames_and_types_never_messages |
+| a log line that is not JSON | tests/unit/test_logs.py::test_the_running_server_writes_only_json_from_start_to_stop |
+| a person, address or tool argument as a metric label | tests/unit/test_metrics.py::test_no_label_carries_a_person_an_address_a_token_or_an_argument |
+| /metrics on the public port | tests/unit/test_metrics.py::test_the_public_port_has_no_metrics |
+| a per-network limit counting a whole company as one address | tests/unit/test_platform.py::test_the_limit_per_network_is_off_without_trusted_proxies_and_on_with_them |
 
 ### Sending and changing
 

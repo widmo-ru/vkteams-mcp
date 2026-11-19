@@ -15,8 +15,10 @@ from typing import Any
 
 import httpx
 
+from vkteams_mcp import observability as obs
 from vkteams_mcp.api.session import VKSession, sign
 from vkteams_mcp.core.errors import VKError
+from vkteams_mcp.core.num import as_int
 
 log = logging.getLogger("vkteams_mcp.api")
 # httpx logs every URL at INFO, and wim URLs carry the aimsid: the client's own logger stays above INFO.
@@ -46,8 +48,9 @@ def _retry_after(value: str | None) -> int:
     """Retry-After is seconds or an HTTP date; anything else is 30 seconds."""
     if not value:
         return 30
-    if value.strip().isdigit():
-        return max(1, min(int(value), 3600))
+    seconds = as_int(value)
+    if seconds is not None:
+        return max(1, min(seconds, 3600))
     try:
         from email.utils import parsedate_to_datetime
 
@@ -280,12 +283,15 @@ class VK:
 
     # ---------------------------------------------------------------- transport
     async def _send(self, method: str, url: str, write: bool, **kw) -> httpx.Response:
+        t0 = time.monotonic()
         try:
             r = await self.http.request(method, url, **kw)
-        except httpx.TimeoutException:
+        except httpx.HTTPError:  # a timeout is one of these
+            obs.inc(obs.UPSTREAM_REQUESTS, "error")
+            obs.UPSTREAM_SECONDS.labels(obs.SERVER).observe(time.monotonic() - t0)
             raise VKError("uncertain" if write else "failed_read") from None
-        except httpx.HTTPError:
-            raise VKError("uncertain" if write else "failed_read") from None
+        obs.inc(obs.UPSTREAM_REQUESTS, f"{r.status_code // 100}xx")
+        obs.UPSTREAM_SECONDS.labels(obs.SERVER).observe(time.monotonic() - t0)
         if r.status_code == 429:
             raise VKError("throttled", seconds=_retry_after(r.headers.get("Retry-After")))
         if r.status_code >= 500:

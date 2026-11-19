@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import inspect
 import logging
+import time
+from contextvars import ContextVar
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -12,6 +14,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import ValidationError
 
 from vkteams_mcp import __version__
+from vkteams_mcp import observability as obs
 from vkteams_mcp.core.errors import VKError
 from vkteams_mcp.registry import ToolSpec, enabled
 
@@ -26,6 +29,10 @@ INSTRUCTIONS = (
 
 # The parameters that carry the person's word. Only the JSON boolean true is that word.
 CONFIRMATION_PARAMS = frozenset({"user_confirmed"})
+
+
+# Set by call_tool when a tool raised something nobody expected, so the metric can tell a crash from a refusal.
+_CRASHED: ContextVar[bool] = ContextVar("tool_crashed", default=False)
 
 
 def annotations(s: ToolSpec) -> ToolAnnotations:
@@ -85,6 +92,21 @@ class VKServer(MCPServer):
         return out
 
     async def _handle_call_tool(self, ctx: Any, params: Any) -> CallToolResult:  # type: ignore[override]
+        """Every tool call is counted and timed: `ok`, `refused` (isError, with a sentence for the person) or
+        `crash`. The label is the tool's name when it is one of ours, else `unknown`: never a caller's string."""
+        tool = params.name if params.name in self.specs else "unknown"
+        _CRASHED.set(False)
+        t0 = time.monotonic()
+        result = "crash"
+        try:
+            out = await self._checked_call(ctx, params)
+            result = "crash" if _CRASHED.get() else "refused" if out.is_error else "ok"
+            return out
+        finally:
+            obs.TOOL_CALLS.labels(obs.SERVER, tool, result).inc()
+            obs.TOOL_SECONDS.labels(obs.SERVER, tool).observe(time.monotonic() - t0)
+
+    async def _checked_call(self, ctx: Any, params: Any) -> CallToolResult:
         name = params.name
         args = params.arguments or {}
         if name not in self.specs:
@@ -121,6 +143,7 @@ class VKServer(MCPServer):
                 log.info("tool %s refused: %s", name, cause.key)
                 raise _Sentence(cause.text) from None
             if isinstance(wrapped, UnexpectedToolError):
+                _CRASHED.set(True)
                 log.error("tool %s crashed: %s", name, type(cause).__name__ if cause else "unknown")
                 raise _Sentence(VKError("unexpected").text) from None
             raise

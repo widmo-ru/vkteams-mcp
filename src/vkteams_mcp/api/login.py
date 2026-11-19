@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections import deque
-from collections.abc import Callable
 
 import httpx
 
@@ -21,6 +19,7 @@ from vkteams_mcp.api.client import VK
 from vkteams_mcp.api.install import Installation
 from vkteams_mcp.api.session import VKSession, derive_session_key
 from vkteams_mcp.core.errors import invalid
+from vkteams_mcp.core.state import StateStore
 
 CODES_PER_ADDRESS_PER_HOUR = 3
 CODES_PER_NETWORK_PER_HOUR = 10
@@ -66,13 +65,14 @@ async def finish_sign_in(
 ) -> VKSession:
     code = "".join(code.split()).upper()
     if not code:
-        raise invalid("Type the code from the e-mail.")
+        raise invalid("Type the code from the e-mail.", wrong_code=True)
     resp = await _client_login(inst, {"devId": dev_id, "s": address.strip(), "pwd": code}, http)
     data = resp.get("data") or {}
     token = (data.get("token") or {}).get("a")
     if resp.get("statusCode") != 200 or not token or not data.get("sessionSecret"):
         raise invalid(
-            "That code was not accepted. Check it against the latest e-mail and type it again; no new code was sent."
+            "That code was not accepted. Check it against the latest e-mail and type it again; no new code was sent.",
+            wrong_code=True,
         )
     host_time = int(data.get("hostTime") or time.time())
     session = VKSession(
@@ -94,32 +94,16 @@ async def finish_sign_in(
 
 
 class CodeLimiter:
-    """Sliding one-hour windows per address and per client network. In memory: one replica."""
+    """Sliding one-hour windows per address and per client network, in the shared state store, so a person cannot
+    be mailed three codes by each replica. A request that is refused is not counted; one that is counted counts
+    against both windows or neither."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
-        self._clock = clock
-        self._by: dict[str, deque[float]] = {}
+    def __init__(self, store: StateStore) -> None:
+        self._store = store
 
-    def _hit(self, key: str, limit: int) -> bool:
-        now = self._clock()
-        q = self._by.setdefault(key, deque())
-        while q and now - q[0] >= 3600:
-            q.popleft()
-        return len(q) >= limit
-
-    def _prune(self) -> None:
-        now = self._clock()
-        for k in [k for k, q in self._by.items() if not q or now - q[-1] >= 3600]:
-            del self._by[k]
-
-    def take(self, *, address: str, network: str | None) -> None:
-        if len(self._by) > 10_000:
-            self._prune()
-        a = "a:" + address.strip().lower()
-        n = "n:" + network if network else None
-        if self._hit(a, CODES_PER_ADDRESS_PER_HOUR) or (n and self._hit(n, CODES_PER_NETWORK_PER_HOUR)):
+    async def take(self, *, address: str, network: str | None) -> None:
+        checks = [("a:" + address.strip().lower(), CODES_PER_ADDRESS_PER_HOUR)]
+        if network:
+            checks.append(("n:" + network, CODES_PER_NETWORK_PER_HOUR))
+        if not await self._store.window_take("codes", checks, 3600):
             raise invalid("Too many codes were requested. Use the code already sent, or try again in an hour.")
-        now = self._clock()
-        self._by[a].append(now)
-        if n:
-            self._by[n].append(now)

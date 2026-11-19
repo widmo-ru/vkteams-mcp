@@ -9,6 +9,7 @@ from vkteams_mcp.core.cursor import Cursors
 from vkteams_mcp.core.errors import MESSAGES, VKError
 from vkteams_mcp.core.guard import CAPACITY, MAX_PEOPLE, Guard
 from vkteams_mcp.core.project import clamp_limit, compact, page_result
+from vkteams_mcp.core.state import MemoryStore, derive_key
 
 # ---------------------------------------------------------------- errors
 
@@ -98,47 +99,51 @@ def test_a_short_cursor_key_is_refused():
 # ---------------------------------------------------------------- guard
 
 
-def test_the_guard_needs_the_boolean_true():
-    g = Guard(clock=lambda: 0.0)
+def guard(clock=lambda: 0.0) -> Guard:
+    return Guard(MemoryStore(derive_key("k" * 40), clock=clock))
+
+
+async def test_the_guard_needs_the_boolean_true():
+    g = guard()
     for word in (None, False):
         with pytest.raises(VKError) as e:
-            g.check("p", kind="message", user_confirmed=word)
+            await g.check("p", kind="message", user_confirmed=word)
         assert e.value.key == "confirm" and "Nothing was sent" in e.value.text
 
 
-def test_the_bucket_refuses_the_eleventh_action():
+async def test_the_bucket_refuses_the_eleventh_action():
     now = [0.0]
-    g = Guard(clock=lambda: now[0])
+    g = guard(lambda: now[0])
     for i in range(CAPACITY):
-        receipt = g.check("p", kind="message", user_confirmed=True)
+        receipt = await g.check("p", kind="message", user_confirmed=True)
         assert receipt["sends_left"] == CAPACITY - 1 - i
     with pytest.raises(VKError) as e:
-        g.check("p", kind="message", user_confirmed=True)
+        await g.check("p", kind="message", user_confirmed=True)
     assert e.value.key == "rate" and "Wait 6 seconds" in e.value.text
     now[0] = 6.0
-    assert g.check("p", kind="message", user_confirmed=True)["sends_left"] == 0
+    assert (await g.check("p", kind="message", user_confirmed=True))["sends_left"] == 0
 
 
-def test_a_refused_action_takes_no_token():
-    g = Guard(clock=lambda: 0.0)
+async def test_a_refused_action_takes_no_token():
+    g = guard()
     with pytest.raises(VKError):
-        g.check("p", kind="message", user_confirmed=None)
-    assert g.check("p", kind="message", user_confirmed=True)["sends_left"] == CAPACITY - 1
+        await g.check("p", kind="message", user_confirmed=None)
+    assert (await g.check("p", kind="message", user_confirmed=True))["sends_left"] == CAPACITY - 1
 
 
-def test_buckets_are_per_person():
-    g = Guard(clock=lambda: 0.0)
+async def test_buckets_are_per_person():
+    g = guard()
     for _ in range(CAPACITY):
-        g.check("a", kind="message", user_confirmed=True)
-    assert g.check("b", kind="message", user_confirmed=True)["sends_left"] == CAPACITY - 1
+        await g.check("a", kind="message", user_confirmed=True)
+    assert (await g.check("b", kind="message", user_confirmed=True))["sends_left"] == CAPACITY - 1
 
 
-def test_more_than_the_people_limit_is_refused_before_the_bucket():
-    g = Guard(clock=lambda: 0.0)
+async def test_more_than_the_people_limit_is_refused_before_the_bucket():
+    g = guard()
     with pytest.raises(VKError) as e:
-        g.check("p", kind="members", user_confirmed=True, people=MAX_PEOPLE + 1)
+        await g.check("p", kind="members", user_confirmed=True, people=MAX_PEOPLE + 1)
     assert e.value.key == "too_many"
-    assert g.check("p", kind="members", user_confirmed=True, people=MAX_PEOPLE)["sends_left"] == CAPACITY - 1
+    assert (await g.check("p", kind="members", user_confirmed=True, people=MAX_PEOPLE))["sends_left"] == CAPACITY - 1
 
 
 # ---------------------------------------------------------------- content marking

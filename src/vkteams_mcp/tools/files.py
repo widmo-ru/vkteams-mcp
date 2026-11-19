@@ -10,6 +10,7 @@ from pydantic import Field
 from vkteams_mcp.core.content import content_line
 from vkteams_mcp.core.context import call
 from vkteams_mcp.core.errors import VKError, invalid
+from vkteams_mcp.core.num import as_int
 from vkteams_mcp.core.project import compact
 from vkteams_mcp.registry import tool
 from vkteams_mcp.tools._common import resolve_chat
@@ -49,7 +50,7 @@ async def download_file(
         if not info.get("dlink"):
             raise VKError("not_found")
         size = info.get("file_size")
-        size = int(size) if isinstance(size, int) or (isinstance(size, str) and size.isdigit()) else None
+        size = as_int(size)
         link = c.rt.links.download(c.vk.s, info["dlink"], info.get("file_name") or fid, size)
         return compact(
             {

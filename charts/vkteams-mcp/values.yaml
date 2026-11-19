@@ -1,0 +1,137 @@
+# vkteams-mcp. Every key is documented in charts/vkteams-mcp/README.md.
+
+image:
+  repository: ghcr.io/widmo-ru/vkteams-mcp
+  tag: ""  # defaults to the chart's appVersion
+  digest: ""  # sha256:… pins the image; wins over tag
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The address people and AI clients reach this server at (https). Required.
+publicUrl: ""
+
+vkteams:
+  # Empty: any public VK Teams installation a person types on the sign-in page. Names here pin the connector
+  # to those hosts (and the sign-in page then asks for none).
+  installations: []
+  # The operator's own VK Teams developer id; empty: the desktop client's public one.
+  devId: ""
+  timezone: Europe/Moscow
+  # An installation inside the company network resolves to private addresses; this lets the server reach them.
+  allowPrivateNetworks: false
+  # A CA bundle for a VK Teams server whose certificate an internal CA issued: a ConfigMap and its key. It
+  # replaces the server's own list of roots (SSL_CERT_FILE), so it must hold every CA the server needs.
+  caBundle:
+    configMap: ""
+    key: ca.crt
+
+# The server's log level: INFO, DEBUG, WARNING, ERROR (LOG_LEVEL).
+logLevel: INFO
+
+# CIDRs of the proxies in front of the server (the ingress controller's pods). Only a connection from one of them
+# may say, in X-Forwarded-For, which client address a request came from; that address is what the per-network limit on
+# sign-in code requests counts. Empty: the limit per network is OFF (every request would count against the
+# ingress's address, one bucket for the whole company) and the server says so in its log at start. The limit per
+# address stays.
+trustedProxies: []
+
+areas: []  # empty: the default areas; or a subset of the areas in the README (chat_admin is off by default)
+
+key:
+  # The sealing key: a Secret you own (scripts/new-sealing-key.sh makes one). It is mounted into the init container only,
+  # which copies it to a memory volume, mode 0400, owned by the server's user; the server container never mounts
+  # the Secret and has no variable with the key.
+  existingSecret: ""
+  secretKey: key
+  # The key does NOT change on a deploy: it is a Secret the deployer owns (a werf secret value, a sealed secret, an
+  # external secret), the same for every release until it is rotated on purpose. Set this to a new id when the Secret
+  # changes (or leave it empty and restart the pods), so every pod restarts and stages the new key.
+  revision: ""
+
+# The Redis or Valkey that holds the state must run with `maxmemory-policy noeviction`: every key here has a TTL and
+# is a limit or a one-use mark, and an evicted key would lift the limit. A write the store refuses for lack of memory
+# fails closed like any other store error. The store holds no value anyone could read: keys are HMACs, values are
+# numbers, timestamps and lock tokens.
+# Where the counters that must agree between replicas live (used codes, sign-in limits, the send allowance, upload
+# locks). Nothing set means memory, which is right for ONE replica: the chart refuses more.
+state:
+  url: ""  # redis:// or rediss:// - one Redis or Valkey
+  sentinel:
+    hosts: []  # ["sentinel-0.example:26379", …] - Sentinel mode; not together with url
+    master: mymaster
+  db: 0  # Sentinel mode; with `url`, the database is the URL's path (redis://host:6379/5)
+  tls: false
+  username: ""  # an ACL user, optional
+  # A Secret with the keys `password` and `sentinelPassword` (both optional). They are staged by the same init
+  # container as the sealing key, into the same memory volume; there is no password variable.
+  existingSecret: ""
+  prefix: ""  # every key is prefixed; empty: "vkteams:"
+
+replicaCount: 2
+
+# Off by default. A CPU-utilisation HPA conflicts with a VerticalPodAutoscaler that sets CPU requests: pick one.
+# inFlightPerPod needs a metrics adapter the platform may not run. There is no CPU limit anywhere in this chart.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  # Set (say 20) to scale on the requests a pod has in flight (mcp_http_requests_in_flight) through a metrics
+  # adapter that serves it as a Pods metric. Null: CPU only.
+  inFlightPerPod: null
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+metrics:
+  # /metrics, /healthz and /readyz are served here and never on the public port; the probes use this port too.
+  port: 9090
+  # An optional ServiceMonitor (kube-prometheus-stack). It selects a Service of the metrics port that the chart then also
+  # creates.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  tlsSecretName: ""  # the host is taken from publicUrl
+  # Explicit paths, never `/`: the probes and /metrics must not be reachable from outside.
+  paths:
+    - /mcp
+    - /.well-known/
+    - /authorize
+    - /token
+    - /register
+    - /revoke
+    - /signin
+    - /static/
+    - /files/
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# /tmp of the server container. The server writes almost nothing there; a file upload is held in memory.
+tmp:
+  medium: Memory
+  sizeLimit: 16Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+# Empty: a soft anti-affinity and a soft spread by node, so replicas land on different nodes when they can.
+affinity: {}
+topologySpreadConstraints: []
+terminationGracePeriodSeconds: 30

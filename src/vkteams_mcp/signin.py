@@ -22,10 +22,12 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
+from vkteams_mcp import observability as obs
 from vkteams_mcp.api.install import Installation, discover, system_resolve
 from vkteams_mcp.api.login import CodeLimiter, finish_sign_in, request_code
 from vkteams_mcp.core.context import runtime
 from vkteams_mcp.core.errors import VKError
+from vkteams_mcp.core.state import StateUnavailable
 
 PENDING_TTL = 15 * 60
 MAX_CODE_TRIES = 5
@@ -35,13 +37,15 @@ _STATIC_TYPES = {".woff2": "font/woff2", ".css": "text/css; charset=utf-8", ".tx
 
 class SignIn:
     """Two form posts, nothing kept: the address step answers with a sealed `pending` field (the installation,
-    the address and the sign-in request it belongs to), and the code step brings it back. Wrong codes are
-    counted per replica; VK Teams counts them too."""
+    the address and the sign-in request it belongs to), and the code step brings it back. Code requests and
+    wrong codes are counted in the shared state store, so the limit is the same whichever replica a request
+    lands on (VK Teams counts them too). With the store down the page refuses to go on: a limit that cannot be
+    checked is not skipped."""
 
     def __init__(self, provider) -> None:
         self.provider = provider
-        self.limiter = CodeLimiter()
-        self._tries: dict[str, tuple[float, int]] = {}
+        self.store = provider.store
+        self.limiter = CodeLimiter(self.store)
 
     async def page(self, request: Request) -> Response:
         lang = pick_lang(request.headers.get("accept-language", ""))
@@ -49,6 +53,16 @@ class SignIn:
         if await self.provider.sign_in_context(rid) is None:
             return _page(lang, error=T[lang]["expired"], status=410)
         return _page(lang, step=1, form=_step1(lang, rid, fixed=self._fixed()))
+
+    @staticmethod
+    def _network(request: Request) -> str | None:
+        """The client's network, for the per-network limit: only when the operator named the proxies in front of the
+        server, so that `request.client` is the real client (uvicorn took it from X-Forwarded-For, from a trusted proxy
+        only). Without that every request comes from the ingress's address and one bucket would serve the whole company:
+        the limit per network is then off, and the limit per address is not."""
+        if not runtime().settings.trusted_proxies or not request.client:
+            return None
+        return request.client.host
 
     def _fixed(self) -> str | None:
         """The one installation this connector is pinned to, if it is pinned to exactly one."""
@@ -62,10 +76,14 @@ class SignIn:
         ctx = await self.provider.sign_in_context(rid)
         if ctx is None:
             return _page(lang, error=T[lang]["expired"], status=410)
-        if form.get("step") == "code":
-            return await self._code(lang, rid, str(form.get("pending", "")), str(form.get("code", "")), ctx)
-        server = self._fixed() or str(form.get("server", ""))
-        return await self._address(lang, request, rid, server, str(form.get("email", "")), ctx)
+        try:
+            if form.get("step") == "code":
+                return await self._code(lang, rid, str(form.get("pending", "")), str(form.get("code", "")), ctx)
+            server = self._fixed() or str(form.get("server", ""))
+            return await self._address(lang, request, rid, server, str(form.get("email", "")), ctx)
+        except StateUnavailable:
+            obs.inc(obs.SIGNIN, "error")
+            return _page(lang, error=T[lang]["try_again"], status=503)
 
     async def _address(self, lang: str, request: Request, rid: str, server: str, email: str, ctx: dict) -> Response:
         rt = runtime()
@@ -74,10 +92,15 @@ class SignIn:
         if "@" not in email or len(email) > 254:
             return _page(lang, step=1, form=again, error=T[lang]["bad_email"], status=400)
         try:
-            self.limiter.take(address=email, network=request.client.host if request.client else None)
+            await self.limiter.take(address=email, network=self._network(request))
+        except VKError as e:
+            obs.inc(obs.SIGNIN, "limited")
+            return _page(lang, step=1, form=again, error=translate(lang, e.text), status=400)
+        try:
             inst = await discover(server, rt.http, rt.settings.policy, resolve=rt.resolve or system_resolve)
             await request_code(inst, email, rt.http, dev_id=rt.settings.dev_id)
         except VKError as e:
+            obs.inc(obs.SIGNIN, "error")
             return _page(lang, step=1, form=again, error=translate(lang, e.text), status=400)
         pending = rt.sealer.seal(
             "pending",
@@ -92,12 +115,14 @@ class SignIn:
         p = rt.sealer.open("pending", pending)
         if p is None or p["rid"] != _digest(rid):
             return _page(lang, step=1, form=_step1(lang, rid, fixed=self._fixed()), error=t["code_expired"], status=400)
-        if self._count(p["n"], p["exp"]) > MAX_CODE_TRIES:
+        if await self._count(p["n"], p["exp"]) > MAX_CODE_TRIES:
+            obs.inc(obs.SIGNIN, "limited")
             return _page(lang, error=t["too_many_codes"], status=429)
         inst = Installation(**p["inst"])
         try:
             session = await finish_sign_in(inst, p["address"], code, rt.http, dev_id=rt.settings.dev_id)
         except VKError as e:
+            obs.inc(obs.SIGNIN, "wrong" if getattr(e, "wrong_code", False) else "error")
             return _page(
                 lang,
                 step=2,
@@ -109,17 +134,14 @@ class SignIn:
         try:
             redirect = await self.provider.complete_sign_in(rid, session)
         except LookupError:
+            obs.inc(obs.SIGNIN, "error")
             return _page(lang, error=t["expired"], status=410)
+        obs.inc(obs.SIGNIN, "ok")
         return RedirectResponse(redirect, status_code=302)
 
-    def _count(self, key: str, expires: float) -> int:
-        now = time.time()
-        if len(self._tries) > 10_000:
-            for k in [k for k, (exp, _) in self._tries.items() if exp < now]:
-                del self._tries[k]
-        _, n = self._tries.get(key, (expires, 0))
-        self._tries[key] = (expires, n + 1)
-        return n + 1
+    async def _count(self, key: str, expires: float) -> int:
+        """Code attempts of one sign-in step, by the step's own nonce, until the step expires."""
+        return await self.store.counter("tries", key, max(1.0, expires - time.time()) + 1)
 
 
 def _digest(value: str) -> str:
@@ -161,6 +183,7 @@ T: dict[str, dict[str, str]] = {
         "bad_email": "Type your work e-mail address.",
         "code_expired": "The code step has expired. Start again.",
         "too_many_codes": "Too many wrong codes. Connect again from your AI app.",
+        "try_again": "This server cannot check sign-in limits right now, so it is not signing anyone in. Try again shortly.",
         "h1_unknown": "Connect again",
         "unknown_client": (
             "This server no longer knows your AI app's connection: the server was updated or its key changed. "
@@ -188,6 +211,7 @@ T: dict[str, dict[str, str]] = {
         "bad_email": "Введите рабочую почту.",
         "code_expired": "Время ввода кода истекло. Начните заново.",
         "too_many_codes": "Слишком много неверных кодов. Подключитесь заново из ИИ-приложения.",
+        "try_again": "Сервер сейчас не может проверить ограничения входа и никого не пускает. Попробуйте через минуту.",
         "h1_unknown": "Подключитесь заново",
         "unknown_client": (
             "Сервер больше не узнаёт подключение вашего ИИ-приложения: его обновили или сменили ключ. "

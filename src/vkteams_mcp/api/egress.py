@@ -38,7 +38,10 @@ async def resolve_public(host: str) -> str:
 
 
 class PublicOnlyTransport(httpx.AsyncBaseTransport):
-    def __init__(self, inner: httpx.AsyncBaseTransport | None = None, resolve=resolve_public) -> None:
+    def __init__(
+        self, inner: httpx.AsyncBaseTransport | None = None, resolve=resolve_public, verify: object = True
+    ) -> None:
+        self._verify = verify  # the CA bundle the operator named, or the default roots
         self._fixed = inner  # tests pass one; otherwise one pool per host name, so a TLS connection made
         self._pools: dict[str, httpx.AsyncBaseTransport] = {}  # for one name is never reused for another
         self._resolve = resolve
@@ -47,7 +50,7 @@ class PublicOnlyTransport(httpx.AsyncBaseTransport):
         if self._fixed is not None:
             return self._fixed
         if host not in self._pools:
-            self._pools[host] = httpx.AsyncHTTPTransport()
+            self._pools[host] = httpx.AsyncHTTPTransport(verify=self._verify)
         return self._pools[host]
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:

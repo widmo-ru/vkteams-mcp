@@ -9,6 +9,7 @@ from conftest import BASE, HOST, ME, wim_error, wim_ok
 from vkteams_mcp.api.install import Installation
 from vkteams_mcp.api.login import CodeLimiter, finish_sign_in, request_code
 from vkteams_mcp.core.errors import VKError
+from vkteams_mcp.core.state import MemoryStore, derive_key
 
 INST = Installation(host=HOST, binary_host=HOST, api_version=139)
 LOGIN = f"{BASE}/wim/auth/clientLogin"
@@ -71,32 +72,36 @@ async def test_an_empty_token_on_finish_is_a_refusal_not_a_session(fake, http):
         await finish_sign_in(INST, ME, "AB12CD", http, dev_id="dev")
 
 
-def test_code_requests_are_limited():
+def limiter(clock=lambda: 0.0) -> CodeLimiter:
+    return CodeLimiter(MemoryStore(derive_key("k" * 40), clock=clock))
+
+
+async def test_code_requests_are_limited():
     now = [0.0]
-    lim = CodeLimiter(clock=lambda: now[0])
+    lim = limiter(lambda: now[0])
     for _ in range(3):
-        lim.take(address="a@example.com", network="198.51.100.1")
+        await lim.take(address="a@example.com", network="198.51.100.1")
     with pytest.raises(VKError) as e:
-        lim.take(address="a@example.com", network="198.51.100.2")
+        await lim.take(address="a@example.com", network="198.51.100.2")
     assert "a@example.com" not in e.value.text
     now[0] = 3601
-    lim.take(address="a@example.com", network="198.51.100.1")
+    await lim.take(address="a@example.com", network="198.51.100.1")
 
 
-def test_one_network_cannot_mail_many_addresses():
-    lim = CodeLimiter(clock=lambda: 0.0)
+async def test_one_network_cannot_mail_many_addresses():
+    lim = limiter()
     for i in range(10):
-        lim.take(address=f"p{i}@example.com", network="198.51.100.9")
+        await lim.take(address=f"p{i}@example.com", network="198.51.100.9")
     with pytest.raises(VKError):
-        lim.take(address="p10@example.com", network="198.51.100.9")
+        await lim.take(address="p10@example.com", network="198.51.100.9")
 
 
-def test_addresses_are_compared_case_blind():
-    lim = CodeLimiter(clock=lambda: 0.0)
+async def test_addresses_are_compared_case_blind():
+    lim = limiter()
     for a in ("A@Example.com", "a@example.com", "a@EXAMPLE.COM"):
-        lim.take(address=a, network=None)
+        await lim.take(address=a, network=None)
     with pytest.raises(VKError):
-        lim.take(address="a@example.com", network=None)
+        await lim.take(address="a@example.com", network=None)
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from urllib.parse import quote, urlsplit
@@ -10,10 +11,13 @@ from urllib.parse import quote, urlsplit
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from vkteams_mcp import observability as obs
 from vkteams_mcp.api.client import VK
 from vkteams_mcp.api.session import VKSession
 from vkteams_mcp.core.context import runtime
 from vkteams_mcp.core.errors import VKError
+from vkteams_mcp.core.num import as_int
+from vkteams_mcp.core.state import StateUnavailable
 from vkteams_mcp.links.links import MAX_UPLOAD_BYTES
 from vkteams_mcp.links.links import _safe as safe_name
 
@@ -25,7 +29,8 @@ _RANGE = re.compile(r"bytes=\d{0,19}-\d{0,19}")
 _PASSED_BACK = ("content-range", "content-length", "accept-ranges", "last-modified", "etag")
 
 
-def _deny() -> Response:
+def _deny(op: str, result: str = "denied") -> Response:
+    obs.inc(obs.LINK_TRANSFERS, op, result)
     return JSONResponse(
         {"error": "This link has expired or is not valid. Ask the assistant for a new one."}, status_code=403
     )
@@ -35,10 +40,10 @@ async def download(request: Request) -> Response:
     rt = runtime()
     link = rt.links.opened_download(request.path_params["lid"])
     if link is None:
-        return _deny()
+        return _deny("download")
     url = link["dlink"]
     if urlsplit(url).hostname not in link["hosts"] or not url.startswith("https://"):
-        return _deny()  # only the person's own installation, whatever the upstream said
+        return _deny("download")  # only the person's own installation, whatever the upstream said
     asked = request.headers.get("range", "")
     # identity: the bytes passed on must be the bytes Content-Length and Content-Range describe
     headers = {"Accept-Encoding": "identity"}
@@ -47,21 +52,27 @@ async def download(request: Request) -> Response:
     upstream = await rt.http.send(rt.http.build_request("GET", url, headers=headers), stream=True)
     if upstream.status_code == 416:  # a range past the end: the client learns the length and stops
         await upstream.aclose()
+        obs.inc(obs.LINK_TRANSFERS, "download", "ok")
         unsatisfied = {k: upstream.headers[k] for k in ("content-range",) if k in upstream.headers}
         if not unsatisfied and isinstance(link.get("size"), int):  # live VK sends none: say the length
             unsatisfied = {"content-range": f"bytes */{link['size']}"}
         return Response(status_code=416, headers=unsatisfied)
     if upstream.status_code not in (200, 206):
         await upstream.aclose()
+        obs.inc(obs.LINK_TRANSFERS, "download", "error")
         return JSONResponse({"error": "VK Teams did not return the file. Try again."}, status_code=502)
     name = link.get("name", "file")
 
     async def body():
+        done = False
         try:
             async for chunk in upstream.aiter_bytes():
                 yield chunk
+            done = True
         finally:
             await upstream.aclose()
+            # counted when the bytes have been sent (or have not): a 200 that dies half way is a failed transfer
+            obs.inc(obs.LINK_TRANSFERS, "download", "ok" if done else "error")
 
     passed = {k: upstream.headers[k] for k in _PASSED_BACK if k in upstream.headers}
     if upstream.headers.get("content-encoding", "identity") != "identity":
@@ -82,19 +93,33 @@ def _disposition(name: str) -> str:
 
 async def upload(request: Request) -> Response:
     rt = runtime()
-    link = rt.links.claim_upload(request.path_params["lid"])  # claimed before any await
-    if link is None:
-        return _deny()
     try:
-        return await _receive(request, rt, link, VKSession.from_json(link["s"]))
+        claim = await rt.links.claim_upload(request.path_params["lid"])  # the lock is taken before any bytes are read
+    except StateUnavailable:
+        obs.inc(obs.LINK_TRANSFERS, "upload", "unavailable")
+        return JSONResponse(
+            {"error": "This server cannot check the link right now. Try again shortly."},
+            status_code=503,
+            headers={"Retry-After": "5"},
+        )
+    if claim is None:
+        return _deny("upload")
+    link, token = claim
+    try:
+        res = await _receive(request, rt, link, VKSession.from_json(link["s"]))
+        obs.inc(obs.LINK_TRANSFERS, "upload", "ok" if res.status_code == 200 else "error")
+        return res
     finally:
-        # released after a success too: a response lost on the way back is recovered by uploading again
-        rt.links.release_upload(link["uid"])
+        # released after a success too: a response lost on the way back is recovered by uploading again. A store
+        # that fails here leaves the lock to expire with the link's ten minutes.
+        with contextlib.suppress(StateUnavailable):
+            await rt.links.release_upload(link["uid"], token)
 
 
 async def _receive(request: Request, rt, link: dict, session: VKSession) -> Response:
     declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES:
+    size = as_int(declared)
+    if size is not None and size > MAX_UPLOAD_BYTES:
         return JSONResponse({"error": f"The file is larger than {MAX_UPLOAD_BYTES // 2**20} MB."}, status_code=413)
     if _UPLOADS.locked():
         return JSONResponse({"error": "The server is receiving other files. Try again in a minute."}, status_code=503)

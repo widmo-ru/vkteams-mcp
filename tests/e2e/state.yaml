@@ -1,0 +1,150 @@
+# Valkey with Sentinel for the chart's end-to-end run: two Valkey nodes (one master, one replica) and three
+# Sentinels, with passwords (Secret `valkey-auth`: `password` for the data nodes, `sentinelPassword` for the
+# Sentinels), the way a deployment would have them. The same Secret is what the chart's state.existingSecret
+# names, so the passwords reach the server through its init container. Test manifests, never in the chart.
+apiVersion: v1
+kind: Service
+metadata: {name: valkey}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: valkey}
+  ports: [{name: valkey, port: 6379}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: valkey-sentinel}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: valkey-sentinel}
+  ports: [{name: sentinel, port: 26379}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: valkey-scripts}
+data:
+  node.sh: |
+    set -eu
+    ord=${HOSTNAME##*-}
+    me=$(hostname -i)
+    pw=$(cat /auth/password)
+    spw=$(cat /auth/sentinelPassword)
+    # Where the master is now, if the Sentinels know: a node that comes back after a failover joins the new master.
+    known=$(valkey-cli -h valkey-sentinel -p 26379 -a "$spw" --no-auth-warning --raw \
+      sentinel get-master-addr-by-name mymaster 2>/dev/null | head -n 1 || true)
+    role=""
+    if [ -n "$known" ] && [ "$known" != "$me" ]; then role="--replicaof $known 6379"
+    elif [ "$ord" != "0" ] && [ -z "$known" ]; then role="--replicaof valkey-0.valkey 6379"; fi
+    echo "{\"event\":\"node\",\"self\":\"$HOSTNAME\",\"role\":\"${role:-master}\"}"
+    # shellcheck disable=SC2086
+    exec valkey-server --port 6379 --save "" --appendonly no --requirepass "$pw" --masterauth "$pw" \
+      --enable-debug-command yes $role
+  sentinel.sh: |
+    set -eu
+    pw=$(cat /auth/password)
+    spw=$(cat /auth/sentinelPassword)
+    # Sentinel monitors an address, not a name: it resolves names on its one thread, and a slow lookup there makes it
+    # enter TILT mode, in which it never starts a failover. valkey-0 is the master at the start.
+    master=""
+    for _ in $(seq 1 60); do
+      master=$(getent hosts valkey-0.valkey | awk '{print $1}' | head -n 1 || true)
+      [ -n "$master" ] && break
+      sleep 1
+    done
+    [ -n "$master" ] || { echo "valkey-0 never resolved"; exit 1; }
+    cat > /tmp/sentinel.conf <<CONF
+    port 26379
+    requirepass $spw
+    sentinel monitor mymaster $master 6379 2
+    sentinel auth-pass mymaster $pw
+    sentinel sentinel-pass $spw
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 15000
+    sentinel parallel-syncs mymaster 1
+    CONF
+    exec valkey-sentinel /tmp/sentinel.conf
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: valkey}
+spec:
+  serviceName: valkey
+  replicas: 2
+  podManagementPolicy: OrderedReady
+  selector: {matchLabels: {app: valkey}}
+  template:
+    metadata: {labels: {app: valkey}}
+    spec:
+      containers:
+        - name: valkey
+          image: valkey/valkey:8-alpine
+          command: ["sh", "/scripts/node.sh"]
+          ports: [{name: valkey, containerPort: 6379}]
+          readinessProbe:
+            exec: {command: ["sh", "-c", "valkey-cli -a \"$(cat /auth/password)\" --no-auth-warning ping | grep -q PONG"]}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: scripts, mountPath: /scripts}
+            - {name: auth, mountPath: /auth, readOnly: true}
+      volumes:
+        - {name: scripts, configMap: {name: valkey-scripts}}
+        - {name: auth, secret: {secretName: valkey-auth}}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: valkey-sentinel}
+spec:
+  serviceName: valkey-sentinel
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector: {matchLabels: {app: valkey-sentinel}}
+  template:
+    metadata: {labels: {app: valkey-sentinel}}
+    spec:
+      containers:
+        - name: sentinel
+          image: valkey/valkey:8-alpine
+          command: ["sh", "/scripts/sentinel.sh"]
+          ports: [{name: sentinel, containerPort: 26379}]
+          readinessProbe:
+            exec: {command: ["sh", "-c", "valkey-cli -p 26379 -a \"$(cat /auth/sentinelPassword)\" --no-auth-warning ping | grep -q PONG"]}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: scripts, mountPath: /scripts}
+            - {name: auth, mountPath: /auth, readOnly: true}
+      volumes:
+        - {name: scripts, configMap: {name: valkey-scripts}}
+        - {name: auth, secret: {secretName: valkey-auth}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: fake-vk}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: fake-vk}}
+  template:
+    metadata: {labels: {app: fake-vk}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001}
+      containers:
+        - name: fake-vk
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Never
+          command: ["python", "/fake/fake_vkteams.py", "/tls/tls.crt", "/tls/tls.key"]
+          env: [{name: FAKE_HOST, value: FAKE_HOST_PLACEHOLDER}]
+          ports: [{containerPort: 8443}]
+          readinessProbe: {tcpSocket: {port: 8443}, periodSeconds: 2}
+          volumeMounts:
+            - {name: fake, mountPath: /fake}
+            - {name: tls, mountPath: /tls}
+      volumes:
+        - {name: fake, configMap: {name: fake-vk-script}}
+        - {name: tls, secret: {secretName: fake-vk-tls}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: fake-vk}
+spec:
+  selector: {app: fake-vk}
+  ports: [{port: 443, targetPort: 8443}]

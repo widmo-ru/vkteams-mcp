@@ -1,6 +1,6 @@
 [project]
 name = "vkteams-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "VK Teams connector for AI agents: one person's chats, messages and files over MCP, with the smallest context and tools that carry the logic."
 readme = "README.md"
 authors = [
@@ -18,7 +18,9 @@ dependencies = [
     "cryptography>=50.0.2",
     "httpx>=0.28.1",
     "mcp>=1.20",
+    "prometheus-client>=0.23",
     "pydantic>=2.14.3",
+    "redis>=6.4",
     "uvicorn>=0.54.0",
 ]
 

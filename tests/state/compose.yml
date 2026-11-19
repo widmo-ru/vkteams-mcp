@@ -1,0 +1,84 @@
+# Valkey as a deployment would run it: one master, one replica and three Sentinels. The state store's
+# contract suite (tests/unit/test_state_contract.py) runs against all of it, from a container on this network
+# (scripts/state-tests.sh), so the Sentinels' answers name hosts the tests can resolve.
+name: vkteams-state-tests
+services:
+  valkey-master:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--port", "6379", "--save", "", "--appendonly", "no"]
+    healthcheck: &ping
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+  valkey-replica:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--port", "6379", "--save", "", "--appendonly", "no", "--replicaof", "valkey-master", "6379"]
+    depends_on:
+      valkey-master: {condition: service_healthy}
+    healthcheck: *ping
+  sentinel-1: &sentinel
+    image: valkey/valkey:8-alpine
+    depends_on:
+      valkey-master: {condition: service_healthy}
+      valkey-replica: {condition: service_healthy}
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/sentinel.conf <<'CONF'
+        port 26379
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        sentinel monitor mymaster valkey-master 6379 2
+        sentinel down-after-milliseconds mymaster 2000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        CONF
+        exec valkey-sentinel /tmp/sentinel.conf
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-p", "26379", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+  sentinel-2: *sentinel
+  sentinel-3: *sentinel
+  # Redis as the platform runs it: no password, no TLS; Sentinel answers with host names (a single Sentinel is a valid
+  # configuration, the tests use one).
+  redis-master:
+    image: redis:7-alpine
+    command: ["redis-server", "--port", "6379", "--save", "", "--appendonly", "no"]
+    healthcheck: &redis-ping
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+  redis-replica:
+    image: redis:7-alpine
+    command: ["redis-server", "--port", "6379", "--save", "", "--appendonly", "no", "--replicaof", "redis-master", "6379"]
+    depends_on:
+      redis-master: {condition: service_healthy}
+    healthcheck: *redis-ping
+  redis-sentinel:
+    image: redis:7-alpine
+    depends_on:
+      redis-master: {condition: service_healthy}
+      redis-replica: {condition: service_healthy}
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/sentinel.conf <<'CONF'
+        port 26379
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        sentinel monitor mymaster redis-master 6379 1
+        sentinel down-after-milliseconds mymaster 2000
+        sentinel failover-timeout mymaster 10000
+        CONF
+        exec redis-sentinel /tmp/sentinel.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 30

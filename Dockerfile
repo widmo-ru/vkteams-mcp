@@ -1,7 +1,13 @@
 # Alpine: the Debian slim base carried about a hundred HIGH and CRITICAL findings with no fix from Debian;
 # on Alpine every finding had a fixed package, which `apk upgrade` installs. CI scans the result with Trivy.
-FROM python:3.12-alpine AS build
-COPY --from=ghcr.io/astral-sh/uv:0.8 /uv /bin/uv
+# Both bases are pinned by digest and can be replaced (--build-arg BASE_IMAGE=registry.example/python:3.12-alpine@sha256:...)
+# to build from an internal mirror.
+ARG BASE_IMAGE=python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8@sha256:1d31be550ff927957472b2a491dc3de1ea9b5c2d319a9cea5b6a48021e2990a6
+FROM ${UV_IMAGE} AS uv
+
+FROM ${BASE_IMAGE} AS build
+COPY --from=uv /uv /bin/uv
 WORKDIR /src
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY src ./src
@@ -9,7 +15,7 @@ RUN uv export --frozen --no-dev --no-emit-project -o requirements.txt \
  && pip install --no-cache-dir --only-binary=:all: --target /deps -r requirements.txt \
  && pip install --no-cache-dir --no-deps --target /app .
 
-FROM python:3.12-alpine
+FROM ${BASE_IMAGE}
 RUN apk upgrade --no-cache \
  && pip uninstall -y pip \
  && adduser -D -u 10001 -s /sbin/nologin app \
