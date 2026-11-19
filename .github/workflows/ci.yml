@@ -114,8 +114,12 @@ jobs:
         run: |
           set -euo pipefail
           kind create cluster --name vk-state --wait 120s
-          docker pull valkey/valkey:8-alpine
-          kind load docker-image vkteams-mcp:e2e valkey/valkey:8-alpine --name vk-state
+          # only the image built here is loaded: the cluster pulls Valkey from its registry itself. `kind load
+          # docker-image` imports every platform of what it is given and fails ("content digest not found") on a
+          # multi-platform image whose other platforms were never pulled; an archive of our single-platform build does not.
+          docker save vkteams-mcp:e2e -o vkteams-mcp-e2e.tar
+          kind load image-archive vkteams-mcp-e2e.tar --name vk-state
+          rm vkteams-mcp-e2e.tar
       - name: the chart in the cluster
         run: IMAGE=vkteams-mcp:e2e scripts/chart-e2e.sh
       - name: what the cluster shows on failure
