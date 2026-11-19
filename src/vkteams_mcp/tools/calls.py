@@ -38,7 +38,7 @@ async def save_call_link(
         if not _visible(title):
             raise invalid("title is empty: give the meeting a name. Nothing was created.")
         people = [await resolve_person(c, p) for p in invite or []]
-        receipt = c.guard(kind="call", user_confirmed=user_confirmed, people=len(people)) if people else {}
+        receipt = await c.guard(kind="call", user_confirmed=user_confirmed, people=len(people)) if people else {}
         r = await c.vk.rapi(
             "conference/create",
             {

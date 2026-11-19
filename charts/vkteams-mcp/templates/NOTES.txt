@@ -1,0 +1,4 @@
+vkteams-mcp {{ .Chart.AppVersion }} serves {{ .Values.publicUrl }}/mcp
+Sealing key: Secret {{ .Values.key.existingSecret }}, staged by the init container into a memory volume, mode 0400.
+State: {{ if .Values.state.sentinel.hosts }}Sentinel ({{ join ", " .Values.state.sentinel.hosts }}, master {{ .Values.state.sentinel.master }}){{ else if .Values.state.url }}{{ .Values.state.url }}{{ else }}memory, one replica only{{ end }}.
+Metrics: port {{ .Values.metrics.port }}, path /metrics, on the pods only.

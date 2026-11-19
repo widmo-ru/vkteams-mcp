@@ -413,7 +413,7 @@ async def send_draft(
             )
         # One send per person and chat at a time on this replica; across replicas VK Teams posts a resend once.
         async with _lock(c.rt, c.person, sn):
-            receipt = c.guard(kind="message", user_confirmed=user_confirmed, target=sn)
+            receipt = await c.guard(kind="message", user_confirmed=user_confirmed, target=sn)
             ids, when = saved.get("local_ids") or {}, saved.get("send_at")
             by_uid = {f["uid"]: f for f in got}
             file_receipts = []
@@ -573,7 +573,7 @@ async def update_message(
                 ids = [str(a.get("answerId")) for a in state.get("answers") or [] if isinstance(a, dict)]
                 if action == "vote" and ids and str(option) not in ids:
                     raise invalid(f"option is one of {', '.join(ids)}. Nothing was changed.")
-        receipt = c.guard(kind="change", user_confirmed=user_confirmed, target=sn)
+        receipt = await c.guard(kind="change", user_confirmed=user_confirmed, target=sn)
         if action == "edit":
             await c.vk.rapi(
                 "message/send",

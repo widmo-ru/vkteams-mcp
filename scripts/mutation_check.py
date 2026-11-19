@@ -35,7 +35,7 @@ MUTATIONS = [
     (
         "the bucket",
         "core/guard.py",
-        [("if b.tokens < 1:", "if False:")],
+        [("        if not b.ok:", "        if False:")],
         [
             "tests/unit/test_core.py::test_the_bucket_refuses_the_eleventh_action",
             "tests/unit/test_messages.py::test_the_bucket_holds_across_tools",
@@ -80,7 +80,7 @@ MUTATIONS = [
     (
         "code requests are limited",
         "api/login.py",
-        [("if self._hit(a, CODES_PER_ADDRESS_PER_HOUR) or", "if False and")],
+        [("        if not await self._store.window_take(", "        if await self._store.window_take(")],
         ["tests/unit/test_signin.py::test_code_requests_are_limited"],
     ),
     (
@@ -571,8 +571,9 @@ MUTATIONS = [
         "oauth/provider.py",
         [
             (
-                'if p is None or p["client_id"] != client.client_id or authorization_code in self._used_codes:',
-                "if p is None or authorization_code in self._used_codes:",
+                'if p is None or p["client_id"] != client.client_id:\n            return None\n'
+                "        return AuthorizationCode(",
+                "if p is None:\n            return None\n        return AuthorizationCode(",
             )
         ],
         ["tests/unit/test_oauth.py::test_a_code_belongs_to_its_client"],
@@ -580,7 +581,7 @@ MUTATIONS = [
     (
         "a code is used once",
         "oauth/provider.py",
-        [(" or authorization_code in self._used_codes:", ":")],
+        [('        if not await self.store.once("code", authorization_code.code, left):', "        if False:")],
         ["tests/unit/test_oauth.py::test_a_code_is_used_once"],
     ),
     (
@@ -642,7 +643,7 @@ MUTATIONS = [
     (
         "a lost upload response can be uploaded again",
         "links/routes.py",
-        [('        rt.links.release_upload(link["uid"])', "        pass")],
+        [('            await rt.links.release_upload(link["uid"], token)', "            pass")],
         ["tests/unit/test_files.py::test_an_upload_lands_in_vk_teams_and_send_draft_posts_it"],
     ),
     (
@@ -675,22 +676,15 @@ MUTATIONS = [
         ["tests/unit/test_replicas.py::test_a_failed_disconnect_is_reported_not_swallowed"],
     ),
     (
-        "a full code cache keeps recording",
-        "oauth/provider.py",
-        [
-            ("        while len(self._used_codes) >= USED_CODES_MAX:", "        while False:"),
-            (
-                "        self._used_codes[authorization_code.code] = authorization_code.expires_at",
-                "        if len(self._used_codes) < USED_CODES_MAX:\n"
-                "            self._used_codes[authorization_code.code] = authorization_code.expires_at",
-            ),
-        ],
-        ["tests/unit/test_replicas.py::test_a_full_code_cache_still_refuses_the_newest_replay"],
+        "a full memory store keeps recording",
+        "core/state.py",
+        [("            while len(self._kv) >= MEMORY_MAX:", "            while False:")],
+        ["tests/unit/test_state_contract.py::test_the_memory_store_is_bounded"],
     ),
     (
         "a key file readable by others is refused",
         "config.py",
-        [("        if mode & 0o077:", "        if False:")],
+        [("    if st.st_mode & 0o077:", "    if False:")],
         ["tests/unit/test_key.py::test_a_key_file_readable_by_others_is_refused"],
     ),
     (
@@ -702,13 +696,13 @@ MUTATIONS = [
     (
         "a key file of another user is refused",
         "config.py",
-        [("        if st.st_uid != os.geteuid():", "        if False:")],
+        [("    if st.st_uid != os.geteuid():", "    if False:")],
         ["tests/unit/test_key.py::test_a_key_file_of_another_user_is_refused"],
     ),
     (
         "a key longer than the limit is refused, not shortened",
         "config.py",
-        [("        if len(raw) > MAX_KEY:", "        if False:")],
+        [("    if len(raw) > limit:", "    if False:")],
         ["tests/unit/test_key.py::test_a_key_longer_than_the_limit_is_refused_not_shortened"],
     ),
     (
@@ -721,7 +715,204 @@ MUTATIONS = [
         "a leftover VKTEAMS_MCP_SECRET leaves the process environment",
         "config.py",
         [('        os.environ.pop("VKTEAMS_MCP_SECRET", None)', "        pass")],
-        ["tests/unit/test_key.py::test_the_secret_variable_is_dropped_from_the_process_environment"],
+        ["tests/unit/test_key.py::test_the_secret_variable_is_dropped_from_the_process_environment_even_when_refused"],
+    ),
+    (
+        "VKTEAMS_MCP_SECRET is refused",
+        "config.py",
+        [("    if legacy:\n        raise ConfigError(", "    if False:\n        raise ConfigError(")],
+        [
+            "tests/unit/test_key.py::test_a_secret_variable_is_refused_and_the_error_names_it_and_the_migration",
+            "tests/unit/test_key.py::test_a_secret_variable_is_refused_even_when_a_key_file_exists",
+        ],
+    ),
+    (
+        "an upload link is busy while an upload of it runs",
+        "links/links.py",
+        [("        return (body, token) if token else None", "        return (body, token or '')")],
+        ["tests/unit/test_files.py::test_a_link_is_busy_while_an_upload_of_it_runs_and_free_after"],
+    ),
+    (
+        "the guard fails closed when the store is down",
+        "core/guard.py",
+        [("        except StateUnavailable:", "        except ZeroDivisionError:")],
+        ["tests/unit/test_state_failclosed.py::test_sending_is_refused_and_nothing_is_sent"],
+    ),
+    (
+        "sign-in fails closed when the store is down",
+        "signin.py",
+        [("        except StateUnavailable:", "        except ZeroDivisionError:")],
+        ["tests/unit/test_state_failclosed.py::test_sign_in_refuses_a_step_it_cannot_count"],
+    ),
+    (
+        "an upload fails closed when the store is down",
+        "links/routes.py",
+        [
+            (
+                "    except StateUnavailable:\n        obs.inc(obs.LINK_TRANSFERS",
+                "    except ZeroDivisionError:\n        obs.inc(obs.LINK_TRANSFERS",
+            )
+        ],
+        ["tests/unit/test_state_failclosed.py::test_an_upload_is_refused_with_503_and_nothing_reaches_vk_teams"],
+    ),
+    (
+        "a code exchange the store cannot record answers 503",
+        "app.py",
+        [("    app.add_exception_handler(StateUnavailable, store_down)", "    pass")],
+        ["tests/unit/test_state_failclosed.py::test_the_token_endpoint_answers_503_and_leaves_the_code_unspent"],
+    ),
+    (
+        "the probes are served on the metrics port",
+        "instrument.py",
+        [('    elif path in ("/healthz", "/readyz") and', "    elif False and")],
+        ["tests/unit/test_metrics.py::test_the_metrics_port_serves_metrics_the_probes_and_nothing_else"],
+    ),
+    (
+        "the heartbeat tells the gauge about a dead store",
+        "app.py",
+        [
+            (
+                "            with contextlib.suppress(StateUnavailable, TimeoutError):\n"
+                "                await asyncio.wait_for(store.ping(), 3)",
+                "            with contextlib.suppress(StateUnavailable, TimeoutError):\n                pass",
+            )
+        ],
+        [
+            "tests/unit/test_state_failclosed.py::test_readiness_does_not_follow_the_store_but_the_gauge_and_the_heartbeat_do"
+        ],
+    ),
+    (
+        "a store failure is raised as StateUnavailable, class only",
+        "core/state.py",
+        [("            raise StateUnavailable(type(err).__name__) from None", "            raise")],
+        [
+            "tests/unit/test_state_contract.py::test_an_unreachable_store_raises_state_unavailable_quickly[standalone]",
+            "tests/unit/test_state_contract.py::test_an_unreachable_store_raises_state_unavailable_quickly[sentinel]",
+        ],
+    ),
+    (
+        "the store's keys never carry the value",
+        "core/state.py",
+        [
+            (
+                '        return f"{self.prefix}{ns}:{_hashed(self.key, ns, ident)}"\n\n    def _live',
+                '        return f"{self.prefix}{ns}:{ident}"\n\n    def _live',
+            )
+        ],
+        ["tests/unit/test_state_contract.py::test_no_key_carries_a_login_an_address_or_an_ip[memory]"],
+    ),
+    (
+        "the memory store's window refuses at its limit",
+        "core/state.py",
+        [
+            (
+                "            if len(q) >= limit:\n                return False",
+                "            if False:\n                return False",
+            )
+        ],
+        [
+            "tests/unit/test_state_contract.py::test_a_window_allows_its_limit_then_refuses[memory]",
+            "tests/unit/test_state_contract.py::test_a_refusal_records_nothing_on_any_key[memory]",
+        ],
+    ),
+    (
+        "the memory store's bucket refuses when empty",
+        "core/state.py",
+        [
+            (
+                "        if b.tokens < 1:\n            return Bucket(False",
+                "        if False:\n            return Bucket(False",
+            )
+        ],
+        ["tests/unit/test_state_contract.py::test_a_bucket_gives_its_capacity_then_says_how_long_to_wait[memory]"],
+    ),
+    (
+        "the memory store spends a code once",
+        "core/state.py",
+        [("        if self._live(k, now):\n            return False", "        if False:\n            return False")],
+        ["tests/unit/test_state_contract.py::test_once_is_true_the_first_time_only[memory]"],
+    ),
+    (
+        "a lock is released only by its holder",
+        "core/state.py",
+        [("        if hit is not None and hit[1] == token:", "        if hit is not None:")],
+        ["tests/unit/test_state_contract.py::test_a_late_release_does_not_free_the_next_holders_lock[memory]"],
+    ),
+    (
+        "a record that looks like content is dropped",
+        "observability.py",
+        [("        if _CONTENT.search(msg):", "        if False:")],
+        ["tests/unit/test_logs.py::test_a_record_that_looks_like_content_is_dropped_and_counted"],
+    ),
+    (
+        "a traceback carries no exception message",
+        "observability.py",
+        [
+            (
+                '            out["exc"] = bare_traceback(record.exc_info)',
+                '            out["exc"] = self.formatException(record.exc_info)',
+            )
+        ],
+        ["tests/unit/test_logs.py::test_a_traceback_is_frames_and_types_never_messages"],
+    ),
+    (
+        "log fields are an allowlist",
+        "observability.py",
+        [('        for k in FIELDS - {"event"}:', "        for k in vars(record):")],
+        ["tests/unit/test_logs.py::test_only_allowlisted_fields_are_carried"],
+    ),
+    (
+        "requests in flight are counted",
+        "instrument.py",
+        [("        gauge.inc()", "        pass")],
+        ["tests/unit/test_metrics.py::test_in_flight_goes_up_while_a_request_runs_and_back_down_after"],
+    ),
+    (
+        "a tool name that is not ours is not a label",
+        "server.py",
+        [('tool = params.name if params.name in self.specs else "unknown"', "tool = params.name")],
+        ["tests/unit/test_metrics.py::test_tool_calls_are_counted_by_result_and_unknown_names_are_not_labels"],
+    ),
+    (
+        "the public port has no metrics",
+        "instrument.py",
+        [('    if path == "/metrics" and scope["method"] in ("GET", "HEAD"):', "    if True:")],
+        ["tests/unit/test_metrics.py::test_the_metrics_port_serves_metrics_the_probes_and_nothing_else"],
+    ),
+    (
+        "a staged file is mode 0400",
+        "stage.py",
+        [("            os.fchmod(fd, 0o400)  # whatever the umask said", "            os.fchmod(fd, 0o644)")],
+        ["tests/unit/test_logs.py::test_the_init_container_stages_files_and_every_line_is_json"],
+    ),
+    (
+        "a password in the store URL is refused",
+        "config.py",
+        [("        if u.username or u.password:", "        if False:")],
+        ["tests/unit/test_state_config.py::test_a_password_in_the_url_is_refused_and_not_echoed"],
+    ),
+    (
+        "a URL and Sentinels together are refused",
+        "config.py",
+        [("    if url and sentinels_raw:", "    if False:")],
+        ["tests/unit/test_state_config.py::test_a_url_and_sentinels_together_are_a_config_error"],
+    ),
+    (
+        "a state setting without a store is refused",
+        "config.py",
+        [
+            (
+                '            if v:\n                raise ConfigError(f"{name} is set but',
+                '            if False:\n                raise ConfigError(f"{name} is set but',
+            )
+        ],
+        ["tests/unit/test_state_config.py::test_a_state_setting_without_a_store_is_an_error_not_a_silent_memory_mode"],
+    ),
+    (
+        "the metrics port is never the public port",
+        "config.py",
+        [("        if metrics_port == port:", "        if False:")],
+        ["tests/unit/test_state_config.py::test_the_metrics_port_defaults_to_9090_and_is_never_the_public_port"],
     ),
 ]
 

@@ -126,9 +126,8 @@ A ready image for linux/amd64 and linux/arm64 is in the GitHub Container Registr
 
 The key the server seals sessions with arrives as a file with mode 0400, not as an environment variable: it is
 in no `env` and no log, and the process is closed to memory reads. On Kubernetes an init container puts the file there from a
-Secret, and a step you add to your deploy pipeline writes the Secret on every deploy:
-[deploy/README.en.md](deploy/README.en.md). A new key signs
-everyone out, once.
+Secret you own, with the Helm chart `oci://ghcr.io/widmo-ru/charts/vkteams-mcp`: [deploy/README.en.md](deploy/README.en.md).
+The key is stable across deploys; replacing it signs everyone out, once.
 
 Docker works the same way: a short-lived container puts the key in a volume. That volume is on disk; on
 Kubernetes the key is in memory (emptyDir `medium: Memory`).
@@ -136,10 +135,10 @@ Kubernetes the key is in memory (emptyDir `medium: Memory`).
 ```sh
 docker volume create vkteams-mcp-key
 openssl rand -base64 48 | docker run --rm -i -v vkteams-mcp-key:/run/vkteams-mcp --entrypoint sh \
-  ghcr.io/widmo-ru/vkteams-mcp:0.3.0 -c 'umask 277; cat > /run/vkteams-mcp/key'
+  ghcr.io/widmo-ru/vkteams-mcp:0.4.0 -c 'umask 277; cat > /run/vkteams-mcp/key'
 docker run -p 127.0.0.1:8000:8000 -v vkteams-mcp-key:/run/vkteams-mcp \
   -e VKTEAMS_MCP_PUBLIC_URL=https://vkteams-mcp.example.org \
-  ghcr.io/widmo-ru/vkteams-mcp:0.3.0
+  ghcr.io/widmo-ru/vkteams-mcp:0.4.0
 ```
 
 Restarting the container reads the same file: sessions are kept. The key is read only at start: to change it,
@@ -151,7 +150,15 @@ To build the image yourself: `docker build -t vkteams-mcp .`.
 |---|---|
 | `VKTEAMS_MCP_PUBLIC_URL` | The https address clients reach this server on (required) |
 | `VKTEAMS_MCP_KEY_FILE` | The key file, at least 32 random characters (default `/run/vkteams-mcp/key`). Owner-only (0400): a file the group or everyone can read is refused. Without the file (and without the deprecated variable below) it does not start; the error messages are in [deploy/README.en.md](deploy/README.en.md#when-the-server-does-not-start). The key seals sessions and signs cursors. A new key signs everyone out |
-| `VKTEAMS_MCP_SECRET` | Deprecated: a key in a variable is visible to anyone who can `kubectl exec … env`. In 0.3.x it is used when there is no key file, with a warning in the log; the next release refuses to start |
+| `LOG_LEVEL` | `INFO` (default), `DEBUG`, `WARNING`, `ERROR`: every log line is a JSON object |
+| `VKTEAMS_MCP_METRICS_PORT` | Port of `/metrics`, `/healthz` and `/readyz` (default 9090); never the public port |
+| `VKTEAMS_MCP_STATE_URL` | `redis://host:6379/0` or `rediss://…`: the shared state store (Redis or Valkey). Unset (and no sentinels): memory, for ONE replica |
+| `VKTEAMS_MCP_STATE_SENTINELS`, `VKTEAMS_MCP_STATE_SENTINEL_MASTER` | `host:26379,…` and the master's name (default `mymaster`): Sentinel mode. Not together with the URL |
+| `VKTEAMS_MCP_STATE_DB`, `_STATE_TLS`, `_STATE_USERNAME`, `_STATE_PREFIX` | database, `true` for TLS, ACL user, key prefix (default `vkteams:`) |
+| `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `_STATE_SENTINEL_PASSWORD_FILE` | passwords, from files only (owner-only 0400, like the key) |
+| `VKTEAMS_MCP_TRUSTED_PROXIES` | CIDRs of the proxies allowed to set `X-Forwarded-For`; without it the sign-in limit per network is off |
+| `VKTEAMS_MCP_CA_BUNDLE` | A CA file for a VK Teams server behind an internal CA |
+| `VKTEAMS_MCP_SECRET` | Removed: a key in a variable is visible to anyone who can `kubectl exec … env`. Refused since 0.4.0: the server does not start while it is set. Migration: [deploy/README.en.md](deploy/README.en.md#moving-from-03x) |
 | `VKTEAMS_MCP_INSTALLATIONS` | Comma-separated VK Teams hosts this connector serves; with one host, the sign-in page asks only the e-mail |
 | `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS` | `1` when the server runs inside a company network next to its VK Teams |
 | `VKTEAMS_MCP_AREAS` | Areas to publish (default all but `chat_admin`) |
@@ -162,8 +169,9 @@ To build the image yourself: `docker build -t vkteams-mcp .`.
 The container speaks plain HTTP on port 8000. Put a reverse proxy that terminates TLS for
 `VKTEAMS_MCP_PUBLIC_URL` in front of it: OAuth and sign-in codes must travel over HTTPS.
 
-The server keeps nothing and has no database. What the next step needs travels in a sealed blob (AES-GCM,
-under the deploy's key), carried by whoever needs it:
+The server has no database and keeps no session. What the next step needs travels in a sealed blob (AES-GCM,
+under the deploy's key), carried by whoever needs it; the few counters that must agree between replicas live in a
+shared store (Redis or Valkey) as HMAC'd keys with numbers and timestamps, never a session, a draft or an address:
 
 | What | Where it lives | How long |
 |---|---|---|
@@ -172,15 +180,15 @@ under the deploy's key), carried by whoever needs it:
 | a draft | in the `draft` value `save_draft` returns | 24 hours |
 | the sign-in code step | in a hidden field of the sign-in form | 15 minutes |
 | a file link | in the link itself | 5 to 10 minutes |
-| the rate allowance | in each replica's memory | until a restart |
+| used authorization codes, sign-in limits, the rate allowance, upload locks | the shared state store (memory with one replica) | minutes to an hour, a TTL on every key |
 | a fresh `aimsid` | in each replica's memory, as a cache | an hour |
 
-So any number of replicas can run; they share one deploy's key. Sending the same draft again posts nothing twice:
+So any number of replicas can run; they share the key and the state store. Sending the same draft again posts nothing twice:
 VK Teams merges messages with the same `localMsgId`, and the server checks scheduled text against the queue.
 Two exceptions: a scheduled poll or reply with a quote is queued again on a resend, and so may a scheduled draft
 sent at the same moment from two replicas.
-Each replica counts the rate allowance itself. Disconnecting ends the session in VK Teams, which kills every
-token carrying it; a single token cannot be revoked before it expires. A new key (every deploy) signs everyone out.
+With the store down, sign-in and sending refuse (try again shortly) and reading goes on. Disconnecting ends the session in VK Teams, which kills every
+token carrying it; a single token cannot be revoked before it expires. Replacing the key signs everyone out.
 
 Most corporate VK Teams servers answer only inside the company network. Run the connector
 there, pinned to that one installation, with `VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1`.

@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0 (2026-11-19)
+
+Many replicas, JSON logs, metrics, and a chart.
+
+- **A shared state store.** The counters that cannot travel sealed move out of each replica's memory into Redis or
+  Valkey (standalone with `VKTEAMS_MCP_STATE_URL`, or behind Sentinel with `VKTEAMS_MCP_STATE_SENTINELS` and
+  `VKTEAMS_MCP_STATE_SENTINEL_MASTER`; `_STATE_DB`, `_STATE_TLS`, `_STATE_USERNAME`, `_STATE_PREFIX`; passwords only from
+  files, `_STATE_PASSWORD_FILE` and `_STATE_SENTINEL_PASSWORD_FILE`, with the key file's checks). Used authorization
+  codes (a code redeemed on one replica was accepted again on another), sign-in code requests per address and per
+  network, wrong codes per sign-in step, the send allowance and the upload locks. Sessions, drafts and links stay sealed
+  and are never stored. Keys are HMACs of the value under a sub-key of the sealing key: no login, address or IP in the
+  store; every key has a TTL. Nothing set is memory, right for one replica, with a warning at start.
+- **A store that cannot be reached fails closed.** Sign-in, spending a code and sending refuse with "try again shortly";
+  reading goes on. A refused token request answers 503 and leaves the code unspent. `/readyz` does not depend on the store.
+- **JSON logs, all of them.** Every line of every process, the init container and a failed start included, is one
+  JSON object (`ts`, `level`, `logger`, `event`, `msg`); a quote or a traceback can no longer break a record, a traceback
+  is frames and exception types without messages, and a record that looks like content is dropped and counted.
+  `LOG_LEVEL`.
+- **Metrics** on `VKTEAMS_MCP_METRICS_PORT` (9090), never the public port, with `/healthz` and `/readyz` there too:
+  `mcp_http_requests_in_flight` and the family's other series (requests, tools, VK Teams calls, sign-in, refusals,
+  links, the store, `mcp_build_info`), all labelled `server="vkteams"`.
+- **`VKTEAMS_MCP_TRUSTED_PROXIES`.** Behind an ingress the per-network sign-in limit counted the whole company as one
+  address; now only the listed proxies may say who the client is, and without the setting that limit is off (the
+  per-address limit stays). `VKTEAMS_MCP_CA_BUNDLE` for a VK Teams server behind an internal CA.
+- **The chart** `oci://ghcr.io/widmo-ru/charts/vkteams-mcp` replaces `deploy/kubernetes/` and `deploy/helm/`: the key
+  through the same init container (now `python -m vkteams_mcp.stage`, JSON log, also staging the store's passwords), a
+  rolling update, a PodDisruptionBudget, soft spreading, probes on the metrics port, explicit ingress paths, an optional
+  ServiceMonitor (off by default), no HPA by default.
+- **The key is stable across deploys.** 0.3.x drew a new random key on every Helm render, so every deploy signed
+  everyone out. The key is now a Secret you own (`scripts/new-sealing-key.sh` makes one), and a deploy keeps everyone
+  signed in. Replacing it is a deliberate rotation: everyone signs in again once.
+- **Breaking: `VKTEAMS_MCP_SECRET` is refused**, as 0.3.0 announced. The server does not start while the variable is
+  set, whether or not a key file exists, and the error names the variable. To migrate: put the key in a Secret (the one
+  you already run with, if you want nobody signed out: `kubectl get secret … -o jsonpath='{.data.key}'` holds it, or
+  write the value of the variable under the field `key`), deploy with the chart (or add the init container
+  `python -m vkteams_mcp.stage /secret/key:/run/vkteams-mcp/key`), and remove the variable from the Deployment, `envFrom`
+  and any secret manager that sets it. The same key value in the file keeps everyone signed in. Steps in
+  [deploy/README.en.md](deploy/README.en.md#moving-from-03x).
+- The image's bases are pinned by digest and replaceable (`BASE_IMAGE`, `UV_IMAGE`).
+- A number that is not a number in a header or a setting is refused, not a crash.
+
+Proof is in CI: the state store's contract suite on real Valkey and Redis (standalone and Sentinel), and the chart in
+kind with three replicas, Valkey with Sentinel and a fake VK Teams (`scripts/chart-e2e.sh`).
+
 ## 0.3.0 (2026-11-18)
 
 The sealing key leaves the environment.

@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 
 import httpx
+import pytest
 from conftest import BIN_HOST, GROUP, SECRET, call_tool, ok, public_resolver
 
 PUBLIC = "https://mcp.example.org"
@@ -184,12 +185,14 @@ async def test_a_disconnect_of_a_dead_session_is_fine(fake, session):
 
 
 async def test_a_full_code_cache_still_refuses_the_newest_replay(monkeypatch):
+    from mcp.server.auth.provider import TokenError
     from test_oauth import a_client, code_for, registered
 
+    from vkteams_mcp.core import state
     from vkteams_mcp.core.seal import Sealer
     from vkteams_mcp.oauth import provider as prov
 
-    monkeypatch.setattr(prov, "USED_CODES_MAX", 2)
+    monkeypatch.setattr(state, "MEMORY_MAX", 2)
     p = prov.Provider(Sealer(SECRET), SECRET, public_url=PUBLIC)
     client = await registered(p, a_client())
     from conftest import ME
@@ -201,7 +204,8 @@ async def test_a_full_code_cache_still_refuses_the_newest_replay(monkeypatch):
         code = await code_for(p, s, client)
         ac = await p.load_authorization_code(client, code)
         await p.exchange_authorization_code(client, ac)
-        assert await p.load_authorization_code(client, code) is None
+        with pytest.raises(TokenError):
+            await p.exchange_authorization_code(client, ac)
 
 
 async def test_a_disconnect_while_vk_teams_is_down_is_reported(fake, session):

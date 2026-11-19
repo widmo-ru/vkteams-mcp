@@ -37,6 +37,10 @@ MESSAGES: dict[str, str] = {
         "Too many actions that other people see, in a short time. The allowance is the person's: {capacity} "
         "at once, then one every {every} seconds. Wait {seconds}. {then}"
     ),
+    "state_down": (
+        "This server cannot reach its shared state right now, so it cannot check the limit on actions other "
+        "people see, and it does not take them. {outcome} Try again shortly."
+    ),
     "not_own_message": "Only your own messages can be edited or deleted. Nothing was changed.",
     "no_draft": (
         "That is not a draft save_draft made for this chat, or it is older than 24 hours. Save it again with "
@@ -90,8 +94,11 @@ class VKError(ToolError):
         return self._text
 
 
-def invalid(reason: str) -> VKError:
-    return VKError("invalid", reason=reason)
+def invalid(reason: str, *, wrong_code: bool = False) -> VKError:
+    """`wrong_code`: the sign-in page's one-time code was not accepted (counted as such in the metrics)."""
+    err = VKError("invalid", reason=reason)
+    err.wrong_code = wrong_code
+    return err
 
 
 def unsupported(reason: str) -> VKError:

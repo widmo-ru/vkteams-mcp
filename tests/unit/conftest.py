@@ -227,19 +227,19 @@ def make_server(fake, session, tmp_path):
     """Build the MCP server on the fake VK, acting as the signed-in person; returns (server, runtime)."""
     from vkteams_mcp.config import Settings
     from vkteams_mcp.core import context
-    from vkteams_mcp.core.guard import Guard
+    from vkteams_mcp.core.state import MemoryStore, derive_key
     from vkteams_mcp.links.links import Links
     from vkteams_mcp.registry import parse_areas
     from vkteams_mcp.server import VKServer
 
-    def build(areas: str | None = None):
+    def build(areas: str | None = None, store=None):
         settings = Settings(public_url="https://mcp.example.org", secret=SECRET, areas=parse_areas(areas))
         rt = context.Runtime(
             settings=settings,
             http=httpx.AsyncClient(transport=fake.transport()),
-            guard=Guard(clock=lambda: 0.0),
+            store=store or MemoryStore(derive_key(SECRET), clock=lambda: 0.0),
         )
-        rt.links = Links("https://mcp.example.org", rt.sealer)
+        rt.links = Links("https://mcp.example.org", rt.sealer, store=rt.store)
         context.install(rt)
         context.session_override.set(session)
         return VKServer(settings.areas), rt
@@ -341,3 +341,18 @@ async def saved(server, args: dict | None = None, **kw) -> str:
     r = await call_tool(server, "save_draft", {**(args or {}), **kw})
     assert not r.is_error, r.content
     return r.structured_content["draft"]
+
+
+@pytest.fixture
+def restore_logging():
+    """A test that runs the process's own logging setup leaves the root logger as it found it."""
+    import logging
+    import sys
+    import threading
+
+    root = logging.getLogger()
+    saved = (root.handlers[:], root.level, sys.excepthook, threading.excepthook)
+    yield
+    root.handlers[:], root.level = saved[0], saved[1]
+    sys.excepthook, threading.excepthook = saved[2], saved[3]
+    logging.captureWarnings(False)

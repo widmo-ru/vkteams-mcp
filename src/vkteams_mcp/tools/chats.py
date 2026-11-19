@@ -171,7 +171,7 @@ async def update_chat(
         else:  # leave
             if not is_chat_sn(sn):
                 raise invalid("Only a group or channel can be left. Nothing was changed.")
-            receipt = c.guard(kind="leave", user_confirmed=user_confirmed, target=sn)
+            receipt = await c.guard(kind="leave", user_confirmed=user_confirmed, target=sn)
             await c.vk.wim("buddylist/removeBuddy", {"buddy": sn, "allGroups": 1}, write=True)
             forget_index(c)
             return {"chat": sn, "done": "left", **receipt}

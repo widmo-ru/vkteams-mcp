@@ -88,6 +88,27 @@ async def test_an_upload_lands_in_vk_teams_and_send_draft_posts_it(app, fake):
     assert texts == ["https://f.example.com/get/F1", "see attached"]
 
 
+async def test_a_link_is_busy_while_an_upload_of_it_runs_and_free_after(app, fake):
+    """One upload at a time per link, whichever replica it lands on: the lock is in the shared store."""
+    a, _, rt, person = app
+    fake.on("GET", "/api/v139/files/init", {"status": {"code": 200}, "result": {"host": BIN_HOST, "url": "/up/2"}})
+    fake.on(
+        "POST",
+        "/up/2",
+        {"status": {"code": 200}, "result": {"fileid": "F2", "static_url": "https://f.example.com/get/F2"}},
+        host=BIN_HOST,
+    )
+    up = rt.links.announce_uploads(person, GROUP, ["a.txt"])[0]
+    lid = urlpath(up["url"]).rsplit("/", 1)[1]
+    running = await rt.links.claim_upload(lid)  # an upload of this link, still in progress
+    assert running is not None
+    busy = await get(a, urlpath(up["url"]), method="PUT", content=b"bytes")
+    assert busy.status_code == 403 and not [s for s in fake.seen if s.path == "/up/2"]
+    await rt.links.release_upload(running[0]["uid"], running[1])
+    done = await get(a, urlpath(up["url"]), method="PUT", content=b"bytes")
+    assert done.status_code == 200, done.text
+
+
 async def test_an_oversized_upload_is_refused_before_it_is_read(app, fake, monkeypatch):
     a, _, rt, person = app
     monkeypatch.setattr("vkteams_mcp.links.routes.MAX_UPLOAD_BYTES", 5)

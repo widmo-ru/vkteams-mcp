@@ -41,6 +41,82 @@ jobs:
       - name: Tool surface matches the lock file
         run: uv run python -m vkteams_mcp.surface --check
 
+  # The state store against real Valkey and Redis, each standalone and behind Sentinel (one master, one replica, three
+  # Sentinels), from a container on the same network (scripts/state-tests.sh). VKTEAMS_TEST_REQUIRE_VALKEY=1 is set
+  # there: a suite that found no Valkey fails instead of skipping.
+  state:
+    name: state store on Valkey and Redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Contract suite and replica tests
+        run: scripts/state-tests.sh
+
+  # The chart renders, refuses what it must, and in a real cluster (kind, on this GitHub-hosted runner) runs three replicas on Valkey with Sentinel.
+  # scripts/chart-e2e.sh counts its own checks, so a check that silently did not run fails the run.
+  chart:
+    name: chart, and in a cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: package, chart and image carry one version
+        run: |
+          set -euo pipefail
+          py="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1)"
+          chart="$(sed -n 's/^version: //p' charts/vkteams-mcp/Chart.yaml)"
+          app="$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' charts/vkteams-mcp/Chart.yaml)"
+          echo "pyproject ${py}, chart ${chart}, appVersion ${app}"
+          test -n "$py" && test "$py" = "$chart" && test "$py" = "$app"
+          grep -q "^__version__ = \"$py\"$" src/vkteams_mcp/__init__.py
+      - name: lint, render, and refuse
+        run: |
+          set -euo pipefail
+          ok=(--set publicUrl=https://mcp.example.org --set key.existingSecret=k --set state.url=redis://valkey:6379/0)
+          helm lint --strict charts/vkteams-mcp "${ok[@]}"
+          helm template t charts/vkteams-mcp "${ok[@]}" > rendered.yaml
+          test "$(grep -c '^kind: Deployment' rendered.yaml)" = 1
+          helm template t charts/vkteams-mcp "${ok[@]}" --set ingress.enabled=true --set metrics.serviceMonitor.enabled=true \
+            --set autoscaling.enabled=true --set 'state.sentinel.hosts={s:26379}' --set state.url= > full.yaml
+          for kind in Ingress ServiceMonitor HorizontalPodAutoscaler PodDisruptionBudget; do
+            grep -q "^kind: $kind" full.yaml || { echo "no $kind rendered"; exit 1; }
+          done
+          # each of these must be refused: a render that succeeds is the failure
+          refuse() {
+            if out=$(helm template t charts/vkteams-mcp "$@" 2>&1); then echo "rendered: $*"; exit 1; fi
+            echo "refused as it should: $*"
+          }
+          refuse --set key.existingSecret=k --set publicUrl=https://mcp.example.org                       # two replicas, no state
+          refuse --set key.existingSecret=k --set publicUrl=https://mcp.example.org --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.minReplicas=2
+          refuse "${ok[@]}" --set 'state.sentinel.hosts={s:26379}'                                         # URL and Sentinels
+          refuse "${ok[@]}" --set state.url=redis://u:p@valkey:6379/0                                      # a password in the URL
+          refuse "${ok[@]}" --set key.existingSecret=
+          refuse "${ok[@]}" --set publicUrl=http://mcp.example.org
+          refuse "${ok[@]}" --set 'ingress.paths={/}'
+          refuse "${ok[@]}" --set metrics.port=8000
+          refuse "${ok[@]}" --set 'trustedProxies={not-a-cidr}'
+      - name: build the image under test
+        run: docker build -t vkteams-mcp:e2e .
+      - name: kind cluster with the image loaded
+        run: |
+          set -euo pipefail
+          kind create cluster --name vk-state --wait 120s
+          docker pull valkey/valkey:8-alpine
+          kind load docker-image vkteams-mcp:e2e valkey/valkey:8-alpine --name vk-state
+      - name: the chart in the cluster
+        run: IMAGE=vkteams-mcp:e2e scripts/chart-e2e.sh
+      - name: what the cluster shows on failure
+        if: failure()
+        run: |
+          kubectl -n vkteams-e2e get pods -o wide || true
+          kubectl -n vkteams-e2e describe pods | tail -120 || true
+          kubectl -n vkteams-e2e logs -l app.kubernetes.io/instance=e2e --all-containers --tail=60 || true
+
   image:
     name: image builds and answers
     runs-on: ubuntu-latest
@@ -116,15 +192,18 @@ jobs:
             "http://127.0.0.1:8000/authorize?response_type=code&client_id=$cid&redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb&state=s&code_challenge=$(printf 'x%.0s' {1..43})&code_challenge_method=S256")"
           echo "after a restart: $code"
           case "$code" in 302\ https://mcp.example.org/signin?request=*) ;; *) exit 1 ;; esac
-      - name: A leftover VKTEAMS_MCP_SECRET still starts the server, with a warning
+      - name: A VKTEAMS_MCP_SECRET variable is refused, in JSON, with exit code 2
         run: |
           set -euo pipefail
-          docker run -d --name legacy -p 127.0.0.1:8003:8000 \
-            -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org -e VKTEAMS_MCP_SECRET="$(openssl rand -base64 48)" \
-            vkteams-mcp:ci
-          for _ in $(seq 1 30); do curl -fsS -m 2 http://127.0.0.1:8003/healthz >/dev/null 2>&1 && break; sleep 1; done
-          curl -fsS http://127.0.0.1:8003/healthz
-          docker logs legacy 2>&1 | grep -q 'VKTEAMS_MCP_SECRET is deprecated and the next release refuses it'
+          rc=0
+          docker run --name legacy -e VKTEAMS_MCP_PUBLIC_URL=https://mcp.example.org \
+            -e VKTEAMS_MCP_SECRET="$(openssl rand -base64 48)" vkteams-mcp:ci >legacy.out 2>&1 || rc=$?
+          echo "exit code $rc"
+          cat legacy.out
+          test "$rc" = 2
+          test "$(wc -l < legacy.out)" -gt 0
+          python3 -c 'import json,sys; [json.loads(l) for l in open("legacy.out") if l.strip()]'
+          grep -q 'VKTEAMS_MCP_SECRET is no longer accepted' legacy.out
       - name: No HIGH or CRITICAL vulnerability in the image
         run: |
           set -euo pipefail

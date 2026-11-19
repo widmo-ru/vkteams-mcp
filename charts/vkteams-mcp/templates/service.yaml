@@ -1,0 +1,31 @@
+{{- include "vkteams-mcp.validate" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vkteams-mcp.fullname" . }}
+  labels: {{- include "vkteams-mcp.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {{- include "vkteams-mcp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+{{- if .Values.metrics.serviceMonitor.enabled }}
+---
+# The metrics port has a Service of its own, so the ingress and the public Service never carry it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vkteams-mcp.fullname" . }}-metrics
+  labels:
+    {{- include "vkteams-mcp.labels" . | nindent 4 }}
+    vkteams-mcp/metrics: "true"
+spec:
+  type: ClusterIP
+  selector: {{- include "vkteams-mcp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+{{- end }}

@@ -202,16 +202,25 @@ def test_the_suite_is_not_empty(request):
     assert len(collected) >= defined * 0.95, "tests on disk were not collected"
 
 
-def test_the_process_listens_on_the_configured_port_without_access_logs(monkeypatch):
+def test_the_process_listens_on_the_configured_port_without_access_logs(monkeypatch, restore_logging, tmp_path):
     import uvicorn
 
     from vkteams_mcp import app as app_module
 
-    seen = {}
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
+    seen = []
+
+    async def record(self, sockets=None):
+        seen.append(self.config)
+
+    monkeypatch.setattr(uvicorn.Server, "serve", record)
     monkeypatch.setenv("VKTEAMS_MCP_PUBLIC_URL", "https://mcp.example.org")
-    monkeypatch.setenv("VKTEAMS_MCP_SECRET", "y" * 40)
-    monkeypatch.setenv("VKTEAMS_MCP_DATABASE", ":memory:")
+    key = tmp_path / "key"
+    key.write_text("y" * 40)
+    key.chmod(0o400)
+    monkeypatch.setenv("VKTEAMS_MCP_KEY_FILE", str(key))
     monkeypatch.setenv("PORT", "8123")
+    monkeypatch.setenv("VKTEAMS_MCP_METRICS_PORT", "9123")
     app_module.main()
-    assert seen["port"] == 8123 and seen["access_log"] is False and seen["log_config"] is None
+    public, metrics = sorted(seen, key=lambda c: c.port == 9123)
+    assert public.port == 8123 and public.access_log is False and public.log_config is None
+    assert metrics.port == 9123 and metrics.access_log is False and metrics.lifespan == "off"

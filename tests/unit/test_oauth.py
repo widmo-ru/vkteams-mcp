@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 from conftest import ME
-from mcp.server.auth.provider import AuthorizationParams
+from mcp.server.auth.provider import AuthorizationParams, TokenError
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
@@ -146,7 +146,11 @@ async def test_a_code_is_used_once(provider, session):
     code = await code_for(provider, session, client)
     ac = await provider.load_authorization_code(client, code)
     await provider.exchange_authorization_code(client, ac)
-    assert await provider.load_authorization_code(client, code) is None
+    with pytest.raises(
+        TokenError
+    ) as e:  # the SDK loads the code, checks PKCE, then exchanges: a replay is refused here
+        await provider.exchange_authorization_code(client, ac)
+    assert e.value.error == "invalid_grant"
 
 
 async def test_a_code_belongs_to_its_client(provider, session):

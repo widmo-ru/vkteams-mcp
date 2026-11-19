@@ -1,0 +1,12 @@
+apiVersion: v2
+name: vkteams-mcp
+description: MCP server for VK Teams - one person's chats, messages and files for an AI assistant, many replicas behind a shared state store
+type: application
+# The release workflow refuses a tag that differs from version and appVersion.
+version: 0.4.0
+appVersion: "0.4.0"
+home: https://github.com/widmo-ru/vkteams-mcp
+sources:
+  - https://github.com/widmo-ru/vkteams-mcp
+annotations:
+  licenses: Apache-2.0

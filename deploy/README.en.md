@@ -2,185 +2,232 @@ English | [Русский](README.md)
 
 # Deploying on Kubernetes
 
-The key the server seals sessions with is in no environment variable and no log: `kubectl exec … env` does not
-show it. In the server's container it sits in one memory-backed file (emptyDir `medium: Memory`), mode 0400 for
-the server's user only, and the process is closed to memory reads (`PR_SET_DUMPABLE=0`).
+The chart [`charts/vkteams-mcp`](../charts/vkteams-mcp/README.md) runs the server with **many replicas**, a shared
+state store (Redis or Valkey, standalone or behind Sentinel), JSON logs, Prometheus metrics on a port of their own,
+and the sealing key delivered the way 0.3.0 introduced: in no environment variable and no log.
+
+```sh
+helm upgrade --install vkteams-mcp oci://ghcr.io/widmo-ru/charts/vkteams-mcp --version 0.4.0 -n vkteams -f values.yaml
+```
+
+```yaml
+# values.yaml: the least that works
+publicUrl: https://vkteams-mcp.example.org
+key:
+  existingSecret: vkteams-mcp-key      # you own it; scripts/new-sealing-key.sh makes one
+state:
+  sentinel: {hosts: ["redis-sentinel:26379"], master: mymaster}   # or: url: redis://redis:6379/0
+vkteams:
+  installations: [teams.example.org]   # pin the connector to your VK Teams
+```
 
 ```mermaid
 flowchart LR
-  CI["CI: the deploy step<br/>openssl rand → kubectl apply<br/>(the key goes through a pipe, never to a log)"] --> S[("Secret<br/>vkteams-mcp-key")]
-  S -->|"volume on the init container only"| I["init container key<br/>install -m 0400"]
+  S[("Secret vkteams-mcp-key<br/>(+ optional state Secret)")] -->|"volume on the init container only"| I["init container stage-keys<br/>python -m vkteams_mcp.stage<br/>0400, JSON log"]
   I --> E[("emptyDir<br/>medium: Memory")]
-  E -->|"read at start"| M["vkteams-mcp<br/>non-dumpable"]
+  E -->|"read at start"| M["vkteams-mcp x N<br/>non-dumpable"]
+  M <-->|"used codes, limits, allowance, locks"| R[("Redis / Valkey<br/>Sentinel")]
+  M -->|":9090 /metrics /healthz /readyz"| P[("Prometheus<br/>kubelet probes")]
 ```
+
+## The sealing key
 
 | Where | Holds the key? |
 |---|---|
-| Secret `vkteams-mcp-key` | yes: CI writes it on every deploy |
-| init container `key` | yes, while it copies, then it exits |
+| Secret (`key.existingSecret`, field `key`) | yes: a Secret you own |
+| init container `stage-keys` | yes, while it copies, then it exits |
 | emptyDir `/run/vkteams-mcp/key` | yes: 0400, owned by uid 10001; the file stays, so a container restart keeps sessions |
 | a Secret volume in the server's container | no: the Secret is mounted into the init container only |
-| the server container's `env` | no: no `env` or `envFrom` with the key |
+| the server container's `env` | no |
 | logs | no |
 | the server process's memory | yes; another process of the same user cannot read it (non-dumpable) |
 
-## What a deploy does
+**The key is stable.** It does not change on a deploy: it is the same Secret for every release, so a rolling update
+(`maxUnavailable: 0`, `maxSurge: 1`) serves old and new pods side by side with one key, and nobody is signed out.
+This is a change from 0.3.x, whose Helm snippet drew a new random key on every render. Put the Secret where your
+secrets live (a werf secret value, a sealed or external secret) or make one with
+`scripts/new-sealing-key.sh <namespace> <secret>`, which prints a revision id for `key.revision`.
 
-| Event | Key | People |
+**Rotating the key** is a separate, deliberate operation: write the new value into the Secret and set a new
+`key.revision` (this restarts every pod through a pod annotation). Everyone signs in again, once; while the rollout
+runs, a token sealed by a new-key pod is refused by an old-key pod. The server takes one key, not a previous one
+alongside: a rollout is the whole overlap.
+
+| Event | People |
+|---|---|
+| a deploy with the same key | stay signed in |
+| a pod restarted or rescheduled | stay signed in |
+| a container restarted inside the pod | stay signed in |
+| the key rotated | **signed out once**: old tokens get 401 `invalid_token`, the client signs in again |
+
+## The state store
+
+Authorization stays stateless: sessions, drafts, file links travel sealed inside what the client holds. The store holds
+only what must be refused the second time wherever it lands:
+
+| What | Key lives | Value |
 |---|---|---|
-| a deploy (a new key in the Secret) | new | **everyone is signed out, once**: old tokens get 401 and the client signs in again |
-| a pod restarted or rescheduled without a deploy | the same: the init container copies the same Secret | stay signed in |
-| a container restarted inside the pod (OOM, a crash, `livenessProbe`) | the same file in the emptyDir | stay signed in |
+| a redeemed authorization code | 5 minutes | `1` |
+| sign-in code requests per address and per network (3 and 10 an hour) | 1 hour | timestamps |
+| wrong codes per sign-in step (5) | 15 minutes | a number |
+| the send allowance per person (10 at once, 10 a minute) | until full again | a number and a time |
+| an upload link while an upload of it runs | 10 minutes | a lock token |
 
-Any number of replicas can run: every pod of one deploy reads the same Secret. `strategy: Recreate` keeps two
-keys from serving at once during a rollout: with `RollingUpdate` a token from a new pod meets an old pod and
-gets 401.
+**Nothing in it is readable.** Every key is `<prefix><kind>:<HMAC-SHA256 of the value under a sub-key of the sealing
+key>`: no login, address or IP appears, even to someone who can read the store. Values are numbers, timestamps and
+random tokens. Every key has a TTL. Run the store with **`maxmemory-policy noeviction`**: an evicted key would lift a
+limit; a write the store refuses for lack of memory is a store error and fails closed. The store may have no password
+and no TLS (inside the platform network); when it has, the password comes from a file.
 
-## What signing out after a deploy looks like
+| Setting | Chart | Environment |
+|---|---|---|
+| one Redis or Valkey | `state.url: redis://host:6379/0` (or `rediss://`) | `VKTEAMS_MCP_STATE_URL` |
+| Sentinel | `state.sentinel.hosts: [h1:26379, …]`, `.master: mymaster` (one host is valid) | `VKTEAMS_MCP_STATE_SENTINELS`, `VKTEAMS_MCP_STATE_SENTINEL_MASTER` |
+| database, TLS, ACL user | `state.db`, `state.tls`, `state.username` | `VKTEAMS_MCP_STATE_DB`, `_STATE_TLS`, `_STATE_USERNAME` |
+| passwords | `state.existingSecret` with keys `password`, `sentinelPassword` | `VKTEAMS_MCP_STATE_PASSWORD_FILE`, `_STATE_SENTINEL_PASSWORD_FILE` |
+| key prefix | `state.prefix` (default `vkteams:`) | `VKTEAMS_MCP_STATE_PREFIX` |
 
-```mermaid
-sequenceDiagram
-  participant C as MCP client
-  participant S as vkteams-mcp (new key)
-  C->>S: /mcp, old access token
-  S-->>C: 401 invalid_token, resource_metadata
-  C->>S: /token, old refresh token and client_id
-  S-->>C: 401 invalid_client
-  C->>S: /register (a new registration)
-  C->>S: /authorize → sign-in page, code from e-mail
-  S-->>C: new tokens
-```
+A URL together with Sentinels is a configuration error, and so is a password in the URL. The password files are
+staged by the same init container as the key, into the same memory volume, with the same checks (a regular file,
+owner-only, the server's uid, at most 1 KiB). Nothing set: memory, which is right for **one** replica; the chart
+refuses more (`replicaCount > 1` or autoscaling without a store), and the server logs a warning at start.
 
-A client that does not register again on `invalid_client` sends the person to its old registration. The
-browser then shows the "Connect again" page: clear the connector's authorization in the AI app and connect again.
+**When the store is down:** sign-in, spending a code and sending fail closed with "try again shortly" (the person is not
+let through without the limit); reading and listing go on. Readiness does **not** depend on the store (one outage
+would empty the Service): `mcp_state_store_up` goes to 0 (set an alert on it). A Sentinel
+failover is followed without a restart: connections time out after 1 second and the master is looked up again.
+
+## Probes, metrics, ingress
+
+| Port | Serves | Public? |
+|---|---|---|
+| 8000 | `/mcp`, OAuth, `/signin`, `/files/…`, `/healthz`, `/readyz` | through the ingress paths only |
+| 9090 (`metrics.port`) | `/metrics`, `/healthz`, `/readyz` | no: pods only |
+
+The kubelet probes use port 9090. `/metrics` is not on the public port (404). The ingress lists explicit paths
+(`ingress.paths`): `/mcp`, `/.well-known/`, `/authorize`, `/token`, `/register`, `/revoke`, `/signin`, `/static/`,
+`/files/`; `/` is refused by the chart.
+
+Metrics, all with the label `server="vkteams"`: `mcp_http_requests_in_flight{route_group}`,
+`mcp_http_requests_total`, `mcp_http_request_duration_seconds`, `mcp_tool_calls_total`, `mcp_tool_duration_seconds`,
+`mcp_upstream_requests_total`, `mcp_upstream_duration_seconds`, `mcp_signin_total{result}`,
+`mcp_auth_refusals_total`, `mcp_guard_refusals_total`, `mcp_link_transfers_total`, `mcp_state_store_up`,
+`mcp_state_store_errors_total`, `mcp_state_store_duration_seconds`, `mcp_log_records_dropped_total`,
+`mcp_build_info{version}`, and the process and Python collectors. Labels never carry a person, an address or a tool
+argument. Scrape the pods on port 9090; `metrics.serviceMonitor.enabled` renders a ServiceMonitor (kube-prometheus-stack)
+with a `-metrics` Service for it. Worth alerting on: `mcp_state_store_up == 0`, a rising 5xx share of
+`mcp_http_requests_total`, `mcp_signin_total{result="limited"}`.
+
+**Autoscaling is off.** A CPU-utilisation HPA conflicts with a VerticalPodAutoscaler that sets CPU requests; pick one.
+`autoscaling.inFlightPerPod` scales on `mcp_http_requests_in_flight` through a metrics adapter, if you run one. The chart
+sets no CPU limit.
+
+**Logs** are one JSON object per line from every process in the image, the init container and a failed start included:
+`ts`, `level`, `logger`, `event`, `msg`. `LOG_LEVEL` (`logLevel`, default `INFO`) applies to every logger.
+
+**Behind an ingress** the per-network limit on sign-in code requests needs the client's address:
+`trustedProxies` (`VKTEAMS_MCP_TRUSTED_PROXIES`, CIDRs of the ingress controller) lets those proxies say it in
+`X-Forwarded-For`. Without it the limit per network is off (all requests would be one address) and the server logs
+that at start; the limit per address stays.
+
+**Uploads and downloads** pass through the ingress: for ingress-nginx set `proxy-body-size` to at least 100m,
+`proxy-buffering: "off"`, and `proxy-read-timeout` / `proxy-send-timeout` of 300 or more. The chart leaves them empty;
+put them in `ingress.annotations`.
+
+**A CA bundle** for a VK Teams server behind an internal CA: `vkteams.caBundle.configMap` and `.key`
+(`VKTEAMS_MCP_CA_BUNDLE`); it replaces the roots the server trusts for VK Teams, so it must hold every CA needed.
+
+The chart templates no NetworkPolicy; `podLabels` lets the store's own policy admit the pods. `/tmp` is a memory volume of
+16Mi (`tmp.medium`, `tmp.sizeLimit`): a file upload is held in memory, not on disk.
+
+## Security review
+
+| Question | Answer |
+|---|---|
+| Models | none: the server calls no model; the AI app does |
+| Outbound hosts | the VK Teams installation the person signs in to, and the state store; nothing else |
+| Data in | the person's VK Teams e-mail and one-time code (on the sign-in page only), tool arguments |
+| Data out | tool results (marked as data), files through short-lived links |
+| In the store | HMAC'd keys; numbers, timestamps, lock tokens; TTL on every key; no session, draft, address or token |
+| In the pod | the sealing key (0400, memory), the person's VK Teams session only inside their own sealed tokens |
+| Logs | JSON; no message text, name, title, address, code or token; a record that looks like content is dropped and counted |
+| Report a defect | [SECURITY.md](../SECURITY.md) |
+
+## Environment variables
+
+The chart sets these; outside the chart they are the interface. Secrets are files, never variables.
+
+| Variable | Meaning |
+|---|---|
+| `VKTEAMS_MCP_PUBLIC_URL` | the https address clients reach the server on (required) |
+| `VKTEAMS_MCP_KEY_FILE` | the key file (default `/run/vkteams-mcp/key`) |
+| `VKTEAMS_MCP_METRICS_PORT` | `/metrics`, `/healthz`, `/readyz` (default 9090; never the public `PORT`) |
+| `VKTEAMS_MCP_STATE_*` | the store, as in the table above |
+| `VKTEAMS_MCP_TRUSTED_PROXIES` | CIDRs allowed to set `X-Forwarded-For` |
+| `VKTEAMS_MCP_CA_BUNDLE` | a CA file for VK Teams |
+| `LOG_LEVEL` | `INFO` by default |
 
 ## Files
 
 | File | What it is |
 |---|---|
-| [`kubernetes/deployment.yaml`](kubernetes/deployment.yaml) | the Deployment with its init container, and a Service |
-| [`kubernetes/new-key.sh`](kubernetes/new-key.sh) | the deploy step for any CI: a new key in the Secret and a restart of the pods |
-| [`helm/secret.yaml`](helm/secret.yaml) | the same Secret for a Helm or werf chart: a new key on every render |
+| [`charts/vkteams-mcp`](../charts/vkteams-mcp/) | the chart, published to `oci://ghcr.io/widmo-ru/charts/vkteams-mcp` |
+| [`scripts/new-sealing-key.sh`](../scripts/new-sealing-key.sh) | makes the Secret with a new key (once, or to rotate), prints `key.revision` |
+| [`scripts/chart-e2e.sh`](../scripts/chart-e2e.sh) | the chart in kind: 3 replicas, Valkey with Sentinel, a fake VK Teams |
+| [`scripts/state-tests.sh`](../scripts/state-tests.sh) | the state store's tests on real Valkey and Redis |
 
-## Any CI
+## Moving from 0.3.x
 
-Deploying the image does not change the key by itself: add the `new-key.sh` step to your deploy pipeline,
-right after the manifests are applied.
+| What | 0.3.x | 0.4.0 |
+|---|---|---|
+| manifests | `deploy/kubernetes/deployment.yaml`, `new-key.sh`, `helm/secret.yaml` | the chart |
+| the key | a new random one on every deploy | **stable**: a Secret you own; a deploy does not sign anyone out |
+| replicas | worked, state per replica (a code could be redeemed on each, limits times N) | a shared store; the chart refuses many replicas without one |
+| the key's init container | `install -m 0400` | `python -m vkteams_mcp.stage` (JSON log); also stages the store's passwords |
+| `VKTEAMS_MCP_SECRET` | used with a warning when there is no key file | **refused**: the server does not start while it is set |
+| logs | a `%`-template that a quote could break | JSON |
 
-```sh
-kubectl -n vkteams apply -f deploy/kubernetes/deployment.yaml
-NAMESPACE=vkteams deploy/kubernetes/new-key.sh
-```
+`VKTEAMS_MCP_SECRET` migration: (1) put the key in a Secret under the field `key` (the variable's value is the key; the same value keeps everyone signed in), (2) deploy with the chart, or add the init container `python -m vkteams_mcp.stage /secret/key:/run/vkteams-mcp/key`, (3) remove the variable from the Deployment, `envFrom` and whatever sets it.
 
-`new-key.sh` hands the key from `openssl` to the Kubernetes API through the shell's memory and a pipe: it is in
-no file, no process's arguments and no log; it turns tracing (`sh -x`) off and does not print `kubectl`'s errors,
-which can quote the Secret. It writes the Secret by server-side apply, without the `last-applied-configuration`
-annotation in which a plain `kubectl apply` keeps a second copy of the key. There is nothing to mask. If your CI does put the key in a variable, declare it secret
-(masked in GitLab, `::add-mask::` in GitHub Actions).
-
-## Helm and werf
-
-Put [`helm/secret.yaml`](helm/secret.yaml) in `templates/` next to the Deployment and add to its pod template:
-
-```yaml
-  template:
-    metadata:
-      annotations:
-        checksum/vkteams-mcp-key: {{ include "vkteams-mcp.keyChecksum" . }}
-```
-
-`randAlphaNum 64` makes the key on every render, so every `helm upgrade` or `werf converge` is a new key, and
-the changed annotation restarts the pods. The key passes through no values file, no `--set` and no CI log.
-`helm template` and `werf render` print it, as they print any Secret: keep their output out of logs. Helm's and
-werf's release history (the `sh.helm.release.v1.*` Secrets) keeps the key of every past deploy; the same people
-who can read Secrets in the namespace can read it. `--history-max` limits how far back it goes.
-
-## Moving from `VKTEAMS_MCP_SECRET`
-
-| Version | `VKTEAMS_MCP_SECRET` in env |
-|---|---|
-| 0.2.x | required |
-| 0.3.x | used when there is no key file, with a warning in the log; ignored when there is one |
-| the next minor release | the server refuses to start |
-
-Upgrading the image without changing the manifests neither crashes the server nor signs anyone out. Moving to
-the init container is the first deploy with a new key: everyone is signed out once.
+Moving to the chart is one deploy with the key from your Secret: if it is not the key the old deploy ran with,
+everyone signs in again once.
 
 ## When the server does not start
 
-| Log line | Cause | What to do |
+Every line below is a JSON record with `"event": "config_error"` on stderr; the exit code is 2.
+
+| `msg` | Cause | What to do |
 |---|---|---|
-| `no sealing key: /run/vkteams-mcp/key does not exist` | no init container or emptyDir | add them, as in `deployment.yaml` |
-| `the sealing key in … is readable by others` | the group or everyone can read the file: say, the Secret is mounted straight into the container (`defaultMode` 0440/0644) | the Secret goes to the init container only; `install -m 0400` writes the file |
-| `the sealing key in … is not a regular file` | a directory, FIFO or device at the path | the init container writes the file: `install -m 0400 /secret/key /run/vkteams-mcp/key` |
-| `the sealing key in … belongs to uid …` | the init container ran as another user than the server | `runAsUser: 10001` at the pod level, as in `deployment.yaml` |
-| `the process could not be made non-dumpable … not starting` | the kernel or a seccomp profile refused `prctl(PR_SET_DUMPABLE)` | allow `prctl` in the seccomp profile (`RuntimeDefault` allows it) |
-| `the sealing key in … could not be read` | a directory at the path, or no read permission | check `install -m 0400` and `fsGroup: 10001` |
-| `the sealing key must be at least 32 random characters` | the Secret is empty or the key is short | run `new-key.sh` again |
-| `the sealing key in … is not text` / `is longer than 4096 bytes` | the wrong file in the Secret | run `new-key.sh` again |
-| `could not write secret/…` (in CI, from `new-key.sh`) | the API refused or did not answer in time; `kubectl`'s message is hidden, it can quote the key | check access and the connection: `kubectl -n vkteams auth can-i patch secret/vkteams-mcp-key`. After a timeout the Secret may have changed: run `new-key.sh` again |
-| `secret/… still has a last-applied-configuration annotation` (from `new-key.sh`) | the annotation with an older copy of the key could not be removed; the pods were not restarted | `kubectl -n vkteams annotate secret vkteams-mcp-key kubectl.kubernetes.io/last-applied-configuration-`, then run `new-key.sh` again |
-| `VKTEAMS_MCP_SECRET is deprecated …` (a warning) | the key still comes as a variable | move to the init container and remove the variable |
-| `VKTEAMS_MCP_SECRET is ignored: the key comes from …` (a warning) | both the file and the variable are there; the file wins | remove the variable: `kubectl exec … env` still shows it |
-
-One more window: between a new key landing in the Secret and the pods restarting, a pod that restarts on its
-own picks up the new key early. If `kubectl apply` changed the pod template, its rollout may run while
-`new-key.sh` writes the Secret, and pods may briefly hold different keys. `new-key.sh` restarts right away, and
-`Recreate` stops every old pod first: after it, all pods share one key. This happens inside a deploy, which signs
-everyone out anyway.
-
-## Live proof
-
-Proven live on 2026-11-18 on the published 0.3.0 image (`sha256:8a10645f…`) in a kind cluster: no key in
-`env` or logs (searched by value), the key file `-r-------- 10001`, `/proc/1/environ` refused to the same user,
-no Secret volume in the server's container. To repeat it: `kubectl exec <pod> -c vkteams-mcp -- env`,
-`… -- ls -ln /run/vkteams-mcp`, `… -- cat /proc/1/environ`, and
-`kubectl get pod <pod> -o jsonpath='{.spec.containers[*].volumeMounts[*].name}'`.
-Run on 2026-11-19 against a real VK Teams server, following the steps below:
-
-| Step | Seen |
-|---|---|
-| sign in, `list_chats` | 3 chats |
-| `kill 1` in the server's container | `RESTARTS 1`, the same pod, exit 0 |
-| `list_chats` with the same token | 3 chats, no refresh, no sign-in: the session survived |
-| `new-key.sh` | a new pod |
-| the old access token on `/mcp` | `401`, `Bearer error="invalid_token", … resource_metadata="…/.well-known/oauth-protected-resource/mcp"` |
-| the old refresh token on `/token` | `401 invalid_client` |
-| a second sign-in, `list_chats` | 3 chats |
-
-It needs a person to sign in twice with an e-mailed code.
-
-| Step | Command | Expect |
-|---|---|---|
-| 1 | `kind create cluster --name vkkey`; `kubectl create ns vkkey` | |
-| 2 | the commands below the table: the manifest with a local address, one replica, the VK Teams host | |
-| 3 | `NAMESPACE=vkkey deploy/kubernetes/new-key.sh` | rollout done |
-| 4 | `kubectl -n vkkey port-forward deploy/vkteams-mcp 8795:8000` | |
-| 5 | `uv run python tests/live/e2e_oauth.py login http://localhost:8795`, sign in with the e-mailed code | `token saved` |
-| 6 | `uv run python tests/live/e2e_oauth.py call http://localhost:8795 list_chats '{}'` | chats |
-| 7 | `kubectl -n vkkey exec deploy/vkteams-mcp -c vkteams-mcp -- kill 1`; wait for `RESTARTS 1` | same pod |
-| 8 | restart the port-forward (it drops with the container), then step 6 again | chats, no sign-in: **the session survived** |
-| 9 | `NAMESPACE=vkkey deploy/kubernetes/new-key.sh`, restart the port-forward | new pod |
-| 10 | `curl -si -H "Authorization: Bearer <access_token from ~/.config/vkteams-mcp/e2e-token.json>" -X POST http://localhost:8795/mcp` | `401`, `WWW-Authenticate: … error="invalid_token" … resource_metadata=` |
-| 11 | steps 5 and 6 | a second sign-in works |
-| 12 | `kind delete cluster --name vkkey` | |
-
-Step 2, with `<host>` the VK Teams server's host name:
-
-```sh
-sed -e 's#value: https://vkteams-mcp.example.org#value: "http://localhost:8795"#' -e 's#replicas: 2#replicas: 1#' \
-  deploy/kubernetes/deployment.yaml | kubectl -n vkkey apply -f -
-kubectl -n vkkey set env deploy/vkteams-mcp VKTEAMS_MCP_ALLOW_PRIVATE_NETWORKS=1 VKTEAMS_MCP_INSTALLATIONS=<host>
-```
-
-`e2e_oauth.py` overwrites `~/.config/vkteams-mcp/e2e-token.json`: copy it aside first.
+| `no sealing key: /run/vkteams-mcp/key does not exist` | no init container or emptyDir | use the chart |
+| `the sealing key in … is readable by others` | the Secret is mounted straight into the container | the Secret goes to the init container only |
+| `the sealing key in … is not a regular file` / `belongs to uid …` / `could not be read` | a wrong file, owner or permission | the init container runs as uid 10001 (`runAsUser`) and writes the file |
+| `the sealing key must be at least 32 random characters` / `is not text` / `is longer than 4096 bytes` | a wrong value in the Secret | `scripts/new-sealing-key.sh` |
+| `VKTEAMS_MCP_STATE_URL and VKTEAMS_MCP_STATE_SENTINELS are both set` | both settings | one of them |
+| `VKTEAMS_MCP_STATE_URL carries a user or password` | a password in a variable | `state.username` and `state.existingSecret` |
+| `the state store password in … is readable by others` / `does not exist` | a bad password file | the init container stages it; the Secret needs the key `password` |
+| `VKTEAMS_MCP_STATE_… is set but there is no VKTEAMS_MCP_STATE_URL` | a store setting without a store | set the URL or the Sentinels |
+| `VKTEAMS_MCP_METRICS_PORT is the public port` | the same port | another port |
+| `the process could not be made non-dumpable … not starting` | a seccomp profile refused `prctl` | `RuntimeDefault` allows it |
+| `stage_failed` (the init container, exit 2) | the Secret lacks the key | the field is `key.secretKey` of `key.existingSecret` |
+| `VKTEAMS_MCP_SECRET is no longer accepted …` | the key still comes as a variable | the migration above, then remove the variable |
 
 ## What remains
 
 | Threat | Closed? |
 |---|---|
-| the key in `kubectl exec … env`, in logs | yes: the key is in no variable and no log |
-| the key in a Secret volume of the server's container | yes: the Secret is mounted into the init container only |
-| the process's memory through `/proc/<pid>/mem` or ptrace from another process of the same user | yes: the process is non-dumpable; on Linux the server does not start without it. Check: `kubectl exec <pod> -c vkteams-mcp -- cat /proc/1/environ` answers `Permission denied` |
-| `kubectl exec` into the server's container: `cat /run/vkteams-mcp/key` (the same uid) | **no**: RBAC on `pods/exec`, the cluster owner's side, closes it |
-| the key in the Secret: whoever may `get secrets` in the namespace reads it | **no**: RBAC on `secrets`, the cluster owner's side |
+| the key in `kubectl exec … env`, in logs | yes |
+| the key in a Secret volume of the server's container | yes: the init container only |
+| the process's memory through `/proc/<pid>/mem` or ptrace from the same user | yes: non-dumpable |
+| a limit lifted by a flushed or evicted store | partly: `noeviction`, a TTL on every key; a flushed store resets the counters |
+| `kubectl exec` into the server's container reading the key (same uid) | **no**: RBAC on `pods/exec`, the cluster owner's side |
+| whoever may `get secrets` in the namespace reads the key | **no**: RBAC on `secrets` |
+
+## Proof
+
+`scripts/chart-e2e.sh` runs in CI on every pull request: three replicas, Valkey with Sentinel (passwords on), a fake
+VK Teams. It checks that a code redeemed on one pod is refused on the others, that code requests and wrong codes are
+counted across pods, that freezing the Valkey master fails sign-in closed and fails over within 30 seconds, that
+`/metrics` is on 9090 only, that every log line of every container is JSON, and that the HPA renders and shows a target.
+The key story of 0.3.0 was proven live against a real VK Teams server on 2026-11-19 (a session survived a container
+restart; a new key refused the old tokens with `invalid_token` and `invalid_client`); that record and its steps are in
+the 0.3.0 release notes and `tests/live/e2e_oauth.py`.
